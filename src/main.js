@@ -8,6 +8,7 @@ import { ao } from 'three/addons/tsl/display/GTAONode.js';
 import { ssr } from 'three/addons/tsl/display/SSRNode.js';
 import { ssgi } from 'three/addons/tsl/display/SSGINode.js';
 import { traa } from 'three/addons/tsl/display/TRAANode.js';
+import { denoise } from 'three/addons/tsl/display/DenoiseNode.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 
 import { Tetris, COLS, ROWS } from './tetris.js';
@@ -164,13 +165,20 @@ if (passes.gtao) {
 }
 
 if (passes.ssgi) {
+  // SSGI uses stochastic ray-marching; without denoising you see the
+  // raw Bayer / blue-noise sample pattern as a halftone overlay around
+  // bright contributors (visible on the columns near the falling pieces).
+  // Bilateral denoise with depth + normal keeps edges sharp while
+  // smoothing the stochastic dither.
   const ssgiPass = ssgi(sceneColor, sceneDepth, sceneNormal, camera);
-  composed = composed.add(ssgiPass);
+  const ssgiClean = denoise(ssgiPass, sceneDepth, sceneNormal, camera);
+  composed = composed.add(ssgiClean);
 }
 
 if (passes.ssr) {
   const ssrPass = ssr(sceneColor, sceneDepth, sceneNormal, sceneMetalRough.r, sceneMetalRough.g);
-  composed = composed.add(ssrPass.rgb);
+  const ssrClean = denoise(ssrPass, sceneDepth, sceneNormal, camera);
+  composed = composed.add(ssrClean.rgb);
 }
 
 if (passes.bloom) {
