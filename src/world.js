@@ -25,16 +25,25 @@ export function buildScene({ anisotropy = 1, shadowMapSize = 4096 } = {}) {
 
   scene.add(new THREE.HemisphereLight(0xa6b8ff, 0x2a1f10, 0.35));
 
+  // Key light positioned directly behind the camera's starting orbit
+  // position (camera begins at (0, 4, 17)), high enough that its shadow
+  // ray drops perpendicular to the arch's plane (the arch lies in the
+  // XY plane at z=0; shadow falls in -Z, straight away from us). As the
+  // camera orbits the static arch, the shadow direction is fixed in
+  // world space and the apparent angle changes with the viewpoint —
+  // physically what would happen with a real-world fixed sun.
   const key = new THREE.DirectionalLight(0xfff0d0, 2.6);
-  key.position.set(10, 16, 12);
+  key.position.set(0, 20, 24);
+  key.target.position.set(0, 0, 0);
+  scene.add(key.target);
   key.castShadow = shadowMapSize > 0;
   key.shadow.mapSize.set(shadowMapSize || 1024, shadowMapSize || 1024);
   key.shadow.camera.near = 1;
-  key.shadow.camera.far = 60;
+  key.shadow.camera.far = 70;
   key.shadow.camera.left = -16;
   key.shadow.camera.right = 16;
   key.shadow.camera.top = 18;
-  key.shadow.camera.bottom = -12;
+  key.shadow.camera.bottom = -14;
   key.shadow.bias = -0.0004;
   key.shadow.normalBias = 0.02;
   key.shadow.radius = 4;
@@ -312,8 +321,11 @@ export function buildScene({ anisotropy = 1, shadowMapSize = 4096 } = {}) {
     // Default cylinder axis is Y; rotate to point along dir.
     const up = new THREE.Vector3(0, 1, 0);
     mesh.quaternion.setFromUnitVectors(up, dir.normalize());
-    // Skip shadows on grid bars — they're thin and would just add noise
-    // to the shadow map without contributing meaningful occlusion.
+    // Grid bars are PBR geometry, so they cast and receive shadows like
+    // any other mesh. With the shadow map at 2048/4096 the lattice
+    // pattern reads cleanly on the floor.
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
     return mesh;
   }
 
