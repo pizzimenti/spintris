@@ -4,6 +4,9 @@ import {
   makeTileColorTexture,
   makeTileNormalTexture,
   makeTileRoughnessTexture,
+  makeMarbleColorTexture,
+  makeMarbleNormalFromColor,
+  makeMarbleRoughnessFromColor,
 } from './textures.js';
 
 export const CELL = 0.55;
@@ -65,12 +68,12 @@ export function buildScene({ anisotropy = 1 } = {}) {
     color: 0xffffff,
     map: tileColor,
     normalMap: tileNormal,
-    normalScale: new THREE.Vector2(0.9, 0.9),
+    normalScale: new THREE.Vector2(0.65, 0.65),
     roughnessMap: tileRough,
-    roughness: 1.0,        // multiplied by the roughness map (0..1)
+    roughness: 1.0,
     metalness: 0.0,
-    clearcoat: 1.0,
-    clearcoatRoughness: 0.06,
+    clearcoat: 0.9,
+    clearcoatRoughness: 0.16,
     envMapIntensity: 1.0,
   });
 
@@ -85,14 +88,83 @@ export function buildScene({ anisotropy = 1 } = {}) {
   const archGroup = new THREE.Group();
   scene.add(archGroup);
 
-  // Polished cream marble — clearcoat layer over a slightly rough core.
-  const marbleMat = new THREE.MeshPhysicalMaterial({
-    color: 0xeae3d4,
-    roughness: 0.18,
-    metalness: 0.02,
+  // Pink marble — high-detail color map, normal derived from color luminance,
+  // varied roughness, and a touch of transmission/thickness so the stone
+  // reads as semi-translucent (light bleeds at the silhouette edges).
+  // 1024 is plenty — even with repeat(1, 3) on the column, each repeat
+  // covers a small fraction of screen pixels. Halving from 2048 cuts the
+  // Sobel-from-color normal pass to a quarter of the time (≈1M iterations
+  // instead of 4M), so the page starts the animate loop fast enough that
+  // no pieces stack while you're still loading.
+  const marbleColor = makeMarbleColorTexture(1024);
+  const marbleNormal = makeMarbleNormalFromColor(marbleColor, 1.3);
+  const marbleRough = makeMarbleRoughnessFromColor(marbleColor);
+
+  // Column tex set: 1× around the circumference, 3× along the height — keeps
+  // the texel density roughly square given the cylinder's aspect ratio.
+  const colTexColor = marbleColor.clone();   colTexColor.repeat.set(1, 3);
+  const colTexNormal = marbleNormal.clone(); colTexNormal.repeat.set(1, 3);
+  const colTexRough = marbleRough.clone();   colTexRough.repeat.set(1, 3);
+  for (const t of [colTexColor, colTexNormal, colTexRough]) {
+    t.anisotropy = anisotropy;
+    t.wrapS = t.wrapT = THREE.RepeatWrapping;
+    t.needsUpdate = true;
+  }
+  if (colTexColor) colTexColor.colorSpace = THREE.SRGBColorSpace;
+
+  // Arch tex set: tile along the arc (~4×) and once around the tube.
+  const archTexColor = marbleColor.clone();   archTexColor.repeat.set(4, 1);
+  const archTexNormal = marbleNormal.clone(); archTexNormal.repeat.set(4, 1);
+  const archTexRough = marbleRough.clone();   archTexRough.repeat.set(4, 1);
+  for (const t of [archTexColor, archTexNormal, archTexRough]) {
+    t.anisotropy = anisotropy;
+    t.wrapS = t.wrapT = THREE.RepeatWrapping;
+    t.needsUpdate = true;
+  }
+  if (archTexColor) archTexColor.colorSpace = THREE.SRGBColorSpace;
+
+  const columnMat = new THREE.MeshPhysicalMaterial({
+    color: 0xffffff,
+    map: colTexColor,
+    normalMap: colTexNormal,
+    // Reduced from 1.8 — high-frequency normal detail on a curved surface
+    // combined with a tight clearcoat lobe causes sub-pixel specular flicker.
+    normalScale: new THREE.Vector2(0.65, 0.65),
+    roughnessMap: colTexRough,
+    roughness: 1.0,
+    metalness: 0.0,
+    // Broader clearcoat lobe so the highlight covers multiple pixels.
     clearcoat: 1.0,
-    clearcoatRoughness: 0.06,
-    envMapIntensity: 1.1,
+    clearcoatRoughness: 0.16,
+    // Light SSS-fake: subtle edge bleed without drowning the surface detail.
+    transmission: 0.05,
+    thickness: 0.35,
+    ior: 1.5,
+    attenuationColor: new THREE.Color(0xc88a82),
+    attenuationDistance: 1.2,
+    emissive: 0x3a1612,
+    emissiveIntensity: 0.06,
+    envMapIntensity: 0.7,
+  });
+
+  const archMat = new THREE.MeshPhysicalMaterial({
+    color: 0xffffff,
+    map: archTexColor,
+    normalMap: archTexNormal,
+    normalScale: new THREE.Vector2(0.55, 0.55),
+    roughnessMap: archTexRough,
+    roughness: 1.0,
+    metalness: 0.0,
+    clearcoat: 1.0,
+    clearcoatRoughness: 0.18,
+    transmission: 0.04,
+    thickness: 0.3,
+    ior: 1.5,
+    attenuationColor: new THREE.Color(0xc88a82),
+    attenuationDistance: 1.0,
+    emissive: 0x3a1612,
+    emissiveIntensity: 0.05,
+    envMapIntensity: 0.7,
   });
 
   // Darker accent stone for capitals/bases — slightly rougher, less polished.
@@ -120,7 +192,7 @@ export function buildScene({ anisotropy = 1 } = {}) {
     // Column shaft — higher segment count for smoother specular highlights.
     const col = new THREE.Mesh(
       new THREE.CylinderGeometry(0.55, 0.65, COL_HEIGHT, 64, 1),
-      marbleMat
+      columnMat
     );
     col.position.set(side * ARCH_INNER, COL_BASE_Y + COL_HEIGHT / 2, 0);
     col.castShadow = true;
@@ -148,7 +220,7 @@ export function buildScene({ anisotropy = 1 } = {}) {
 
   const arch = new THREE.Mesh(
     new THREE.TorusGeometry(ARCH_INNER, 0.45, 32, 128, Math.PI),
-    marbleMat
+    archMat
   );
   arch.position.set(0, COL_BASE_Y + COL_HEIGHT + 0.45, 0);
   arch.castShadow = true;

@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { pass } from 'three/tsl';
 import { bloom } from 'three/addons/tsl/display/BloomNode.js';
+import { fxaa } from 'three/addons/tsl/display/FXAANode.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 
 import { Tetris, COLS, ROWS } from './tetris.js';
@@ -14,6 +15,7 @@ const backendEl = document.getElementById('backend');
 const renderer = new THREE.WebGPURenderer({
   canvas,
   antialias: true,
+  samples: 4,
   powerPreference: 'high-performance',
 });
 
@@ -41,7 +43,8 @@ const { scene, archGroup, piecesGroup } = buildScene({ anisotropy });
 // Cheap, no HDR file download, and gives every clearcoat surface something to
 // reflect (so the marble actually reads as polished).
 const pmrem = new THREE.PMREMGenerator(renderer);
-const envTex = pmrem.fromScene(new RoomEnvironment(), 0.06).texture;
+// sigma=0.04 — max effective before three.js logs "too large and will clip".
+const envTex = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
 scene.environment = envTex;
 scene.environmentIntensity = 0.4;
 
@@ -73,7 +76,10 @@ const renderPipeline = new THREE.RenderPipeline(renderer);
 const scenePass = pass(scene, camera);
 const scenePassColor = scenePass.getTextureNode('output');
 const bloomPass = bloom(scenePassColor, 0.32, 0.45, 0.85);
-renderPipeline.outputNode = scenePassColor.add(bloomPass);
+// FXAA last so it smooths the bloom-composited frame, picking up specular
+// flicker on the curved marble that MSAA can't see (MSAA only addresses
+// geometric edges, not shader-level high-frequency content).
+renderPipeline.outputNode = fxaa(scenePassColor.add(bloomPass));
 
 function resize() {
   const w = window.innerWidth, h = window.innerHeight;
