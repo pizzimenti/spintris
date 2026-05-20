@@ -328,52 +328,58 @@ export function makeConcreteColorTexture(size = 2048) {
     ctx.fill();
   }
 
-  // Hairline cracks — sparse, very subtle, warm-dark color
-  for (let i = 0; i < 10; i++) {
-    ctx.strokeStyle = `rgba(80, 70, 55, ${0.20 + Math.random() * 0.25})`;
-    ctx.lineWidth = 0.4 + Math.random() * 0.8;
-    let x = Math.random() * size, y = Math.random() * size;
-    ctx.beginPath();
-    ctx.moveTo(x, y);
-    const segments = 5 + Math.floor(Math.random() * 7);
-    for (let s = 0; s < segments; s++) {
-      const dx = (Math.random() - 0.5) * 220;
-      const dy = (Math.random() - 0.5) * 220;
-      const cx = x + dx * 0.5 + (Math.random() - 0.5) * 60;
-      const cy = y + dy * 0.5 + (Math.random() - 0.5) * 60;
-      x += dx; y += dy;
-      ctx.quadraticCurveTo(cx, cy, x, y);
-    }
-    ctx.stroke();
-  }
+  // ---- Jagged random-walk cracks ---------------------------------------
+  // Each crack is a true random walk: heading drifts slowly with small
+  // per-step jitter, width varies along its length, and there's a chance
+  // of branching off into shorter side cracks. Drawn as a chain of small
+  // filled discs so the trail naturally has variable thickness and soft
+  // edges instead of reading as straight stroked segments.
+  function walkCrack(sx, sy, steps, maxW) {
+    let x = sx, y = sy;
+    let heading = Math.random() * Math.PI * 2;
+    for (let s = 0; s < steps; s++) {
+      // Slow drift in heading (curved overall path) + short jitter (jagged)
+      heading += (Math.random() - 0.5) * 0.18;
+      const stride = 0.9 + Math.random() * 1.6;
+      x += Math.cos(heading + (Math.random() - 0.5) * 0.6) * stride;
+      y += Math.sin(heading + (Math.random() - 0.5) * 0.6) * stride;
 
-  // ---- Crackle network — the reference's defining feature -------------
-  // Random nodes connected to nearest neighbours forms a dried-mud /
-  // surface-weathering crackle pattern. Same dark warm color so it reads
-  // through any clearcoat as discoloration baked into the concrete.
-  const crackleNodes = [];
-  const nodeCount = 90;
-  for (let i = 0; i < nodeCount; i++) {
-    crackleNodes.push({ x: Math.random() * size, y: Math.random() * size });
-  }
-  ctx.strokeStyle = 'rgba(48, 40, 30, 0.55)';
-  ctx.lineWidth = 0.8;
-  for (const node of crackleNodes) {
-    // Connect each node to its 2-3 nearest neighbors
-    const dists = crackleNodes
-      .map(n => ({ n, d: Math.hypot(n.x - node.x, n.y - node.y) }))
-      .sort((a, b) => a.d - b.d);
-    const connections = 2 + Math.floor(Math.random() * 2);
-    for (let i = 1; i <= connections && i < dists.length; i++) {
+      // Width tapers at ends, varies along the body
+      const t = s / steps;
+      const taper = Math.sin(t * Math.PI);
+      const w = maxW * (0.25 + 0.75 * taper) * (0.7 + Math.random() * 0.6);
+
+      ctx.fillStyle = `rgba(${28 + Math.random() * 18 | 0}, ${24 + Math.random() * 14 | 0}, ${18 + Math.random() * 12 | 0}, ${0.55 + Math.random() * 0.35})`;
       ctx.beginPath();
-      // Slight wobble so cracks aren't perfectly straight
-      const target = dists[i].n;
-      const midX = (node.x + target.x) / 2 + (Math.random() - 0.5) * 8;
-      const midY = (node.y + target.y) / 2 + (Math.random() - 0.5) * 8;
-      ctx.moveTo(node.x, node.y);
-      ctx.quadraticCurveTo(midX, midY, target.x, target.y);
-      ctx.stroke();
+      ctx.arc(x, y, w, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Occasional break (1-2 steps of nothing) — fractures aren't continuous
+      if (Math.random() < 0.03) s += 2;
+
+      // Occasional side branch — recurse with shorter length & narrower width
+      if (Math.random() < 0.015 && steps > 18) {
+        walkCrack(x, y, Math.floor(steps * 0.35), maxW * 0.7);
+      }
     }
+  }
+  const primaryCracks = 28;
+  for (let i = 0; i < primaryCracks; i++) {
+    walkCrack(
+      Math.random() * size,
+      Math.random() * size,
+      80 + Math.floor(Math.random() * 240),
+      0.6 + Math.random() * 1.4,
+    );
+  }
+  // A few finer hairlines on top
+  for (let i = 0; i < 14; i++) {
+    walkCrack(
+      Math.random() * size,
+      Math.random() * size,
+      60 + Math.floor(Math.random() * 120),
+      0.35 + Math.random() * 0.5,
+    );
   }
 
   // ---- Pits ------------------------------------------------------------

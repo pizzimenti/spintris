@@ -62,34 +62,63 @@ export function buildScene({ anisotropy = 1, shadowMapSize = 4096 } = {}) {
   accent.position.set(0, 0, 4);
   scene.add(accent);
 
-  // ---- Overhead light fixtures ------------------------------------------
+  // ---- Corner stand lamps -----------------------------------------------
   //
-  // Two complementary mechanisms for the warehouse-ceiling-reflection
-  // look from the reference photo:
-  //
-  //   (a) The custom warehouse env map (scene.environment) bakes bright
-  //       horizontal bands at ceiling elevation — every PBR material
-  //       gets these as IBL reflections regardless of camera angle.
-  //
-  //   (b) Visible emissive light fixtures positioned at y=7.5 in a row
-  //       along the Z axis — low enough to fit inside the camera's FOV
-  //       (camera at y=4 looking at y=-1.2 sees up to roughly y=7 at
-  //       z=0), so SSR catches them and adds sharp streak reflections.
-  //
-  // Together you get always-on ambient ceiling reflection from (a) plus
-  // the dramatic streak pattern from (b) when fixtures are in frame.
-  const fixtureMat = new THREE.MeshStandardMaterial({
-    color: 0xffffff,
-    emissive: 0xfff0d6,
-    emissiveIntensity: 4.5,
-    roughness: 1.0,
-    metalness: 0.0,
+  // Four floor lamps at the corners surrounding the arch, half the arch's
+  // total height. Thin dark metal pole, glowing globe shade at the top
+  // with a co-located warm point light. These are the only ambient light
+  // sources besides the key spotlight that throws the arch's shadow.
+  const archTotalHeight = COL_HEIGHT + 0.45 + ARCH_INNER + 0.6; // base→keystone top
+  const LAMP_H = archTotalHeight / 2;          // half arch height
+  const LAMP_OFFSET = 6.5;                      // distance from origin in X/Z
+  const lampPositions = [
+    [+LAMP_OFFSET, +LAMP_OFFSET],
+    [-LAMP_OFFSET, +LAMP_OFFSET],
+    [+LAMP_OFFSET, -LAMP_OFFSET],
+    [-LAMP_OFFSET, -LAMP_OFFSET],
+  ];
+
+  const poleGeo = new THREE.CylinderGeometry(0.04, 0.06, LAMP_H, 14, 1);
+  const poleMat = new THREE.MeshPhysicalMaterial({
+    color: 0x18181c,
+    roughness: 0.35,
+    metalness: 0.85,
+    clearcoat: 0.4,
+    clearcoatRoughness: 0.2,
   });
-  const fixtureGeo = new THREE.BoxGeometry(5.0, 0.12, 0.55);
-  for (const z of [-22, -14, -6, 2]) {
-    const fix = new THREE.Mesh(fixtureGeo, fixtureMat);
-    fix.position.set(0, 7.5, z);
-    scene.add(fix);
+  const baseGeo = new THREE.CylinderGeometry(0.28, 0.32, 0.08, 24, 1);
+  const shadeGeo = new THREE.SphereGeometry(0.34, 28, 18);
+  const shadeMat = new THREE.MeshStandardMaterial({
+    color: 0xfff2d4,
+    emissive: 0xffd095,
+    emissiveIntensity: 3.2,
+    roughness: 0.45,
+    metalness: 0.05,
+  });
+
+  for (const [px, pz] of lampPositions) {
+    const baseY = FLOOR_Y + 0.04;
+    const base = new THREE.Mesh(baseGeo, poleMat);
+    base.position.set(px, baseY, pz);
+    base.castShadow = true;
+    base.receiveShadow = true;
+    scene.add(base);
+
+    const pole = new THREE.Mesh(poleGeo, poleMat);
+    pole.position.set(px, baseY + LAMP_H / 2, pz);
+    pole.castShadow = true;
+    scene.add(pole);
+
+    const shade = new THREE.Mesh(shadeGeo, shadeMat);
+    shade.position.set(px, baseY + LAMP_H + 0.05, pz);
+    scene.add(shade);
+
+    // Warm point light co-located with the shade. No castShadow on these
+    // — adding cube-map shadow casts for 4 point lights would multiply
+    // shadow render cost by ~24 passes per frame for marginal gain.
+    const light = new THREE.PointLight(0xffd095, 7.5, 16, 1.5);
+    light.position.set(px, baseY + LAMP_H + 0.05, pz);
+    scene.add(light);
   }
 
   // ---- Floor: polished cured concrete with mirror clearcoat -------------
