@@ -1,7 +1,12 @@
 import * as THREE from 'three';
-import { pass } from 'three/tsl';
+import {
+  pass, mrt, output, normalView, metalness, roughness,
+  directionToColor, colorToDirection, vec2, vec3, vec4, sample,
+} from 'three/tsl';
 import { bloom } from 'three/addons/tsl/display/BloomNode.js';
 import { fxaa } from 'three/addons/tsl/display/FXAANode.js';
+import { ao } from 'three/addons/tsl/display/GTAONode.js';
+import { ssr } from 'three/addons/tsl/display/SSRNode.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 
 import { Tetris, COLS, ROWS } from './tetris.js';
@@ -100,14 +105,46 @@ positionOrbit();
 const shake = new CameraShake();
 
 // Node-based postprocessing.
+//
+// Chain: scene (MRT: color, normal, metalrough) → GTAO → SSR → bloom → FXAA.
+//
+//   - MRT gives the AO and SSR nodes access to per-pixel normal and material
+//     properties without re-rendering the scene.
+//   - GTAO darkens contact areas (under the arch, between settled bricks,
+//     where the columns meet the floor).
+//   - SSR adds screen-space reflections so the polished marble floor will
+//     actually mirror the columns and falling bricks, not just the IBL probe.
+//   - Bloom and FXAA come last so they operate on the lit + reflected frame.
 const renderPipeline = new THREE.RenderPipeline(renderer);
 const scenePass = pass(scene, camera);
-const scenePassColor = scenePass.getTextureNode('output');
-const bloomPass = bloom(scenePassColor, 0.32, 0.45, 0.85);
-// FXAA last so it smooths the bloom-composited frame, picking up specular
-// flicker on the curved marble that MSAA can't see (MSAA only addresses
-// geometric edges, not shader-level high-frequency content).
-renderPipeline.outputNode = fxaa(scenePassColor.add(bloomPass));
+scenePass.setMRT(mrt({
+  output,
+  normal: directionToColor(normalView),
+  metalrough: vec2(metalness, roughness),
+}));
+
+const sceneColor = scenePass.getTextureNode('output');
+const sceneNormalTex = scenePass.getTextureNode('normal');
+const sceneDepth = scenePass.getTextureNode('depth');
+const sceneMetalRough = scenePass.getTextureNode('metalrough');
+const sceneNormal = sample(uv => colorToDirection(sceneNormalTex.sample(uv)));
+
+const aoPass = ao(sceneDepth, sceneNormal, camera);
+const aoTexture = aoPass.getTextureNode();
+const aoMultiplier = vec4(vec3(aoTexture.r), 1.0);
+
+const ssrPass = ssr(
+  sceneColor,
+  sceneDepth,
+  sceneNormal,
+  sceneMetalRough.r,
+  sceneMetalRough.g,
+);
+
+const aoLit = sceneColor.mul(aoMultiplier);
+const withReflections = aoLit.add(ssrPass.rgb);
+const bloomPass = bloom(withReflections, 0.32, 0.45, 0.85);
+renderPipeline.outputNode = fxaa(withReflections.add(bloomPass));
 
 function resize() {
   const w = window.innerWidth, h = window.innerHeight;
