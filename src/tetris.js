@@ -134,19 +134,28 @@ export class Tetris {
   }
 
   clearLines() {
-    const cleared = [];
+    const rows = [];
     for (let r = ROWS - 1; r >= 0; r--) {
-      if (this.board[r].every(c => c !== null)) cleared.push(r);
+      if (this.board[r].every(c => c !== null)) rows.push(r);
     }
-    if (!cleared.length) return [];
-    const remaining = this.board.filter((_, r) => !cleared.includes(r));
-    const empty = Array.from({ length: cleared.length }, () => Array(COLS).fill(null));
+    if (!rows.length) return { rows: [], cells: [] };
+
+    // Snapshot the doomed cells before mutation, so callers can spawn FX.
+    const cells = [];
+    for (const r of rows) {
+      for (let c = 0; c < COLS; c++) {
+        cells.push({ row: r, col: c, color: this.board[r][c] });
+      }
+    }
+
+    const remaining = this.board.filter((_, r) => !rows.includes(r));
+    const empty = Array.from({ length: rows.length }, () => Array(COLS).fill(null));
     this.board = [...empty, ...remaining];
-    const n = cleared.length;
+    const n = rows.length;
     this.score += [0, 100, 300, 500, 800][n] * this.level;
     this.lines += n;
     this.level = Math.floor(this.lines / 10) + 1;
-    return cleared;
+    return { rows, cells };
   }
 
   ghostY() {

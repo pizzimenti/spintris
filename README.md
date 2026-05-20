@@ -35,11 +35,23 @@ your point of view looks like it's going right. That's the game.
   (no build step).
 - `WebGPURenderer` — uses WebGPU when available, transparent fallback to WebGL2.
 - TSL (Three Shading Language) node-based post-processing for bloom.
-- PCF-soft shadow maps, ACES tone mapping, exponential fog.
+- `RoomEnvironment` → PMREM cubemap for image-based lighting.
+- ACES filmic tone mapping, anisotropic filtering, 4096² PCF-soft shadow maps.
+
+## Visuals (v0.2.0)
+
+- Polished marble columns and arch — `MeshPhysicalMaterial` with clearcoat over
+  cream stone, IBL env contribution.
+- Tiled marble floor — procedurally generated color / normal / roughness maps
+  (charcoal marble with pale veining and recessed grout).
+- Particle burst on line clear, camera shake on impact, glowing tetrominoes
+  with bloomed active piece.
 
 ## Files
 
 - `index.html` — page shell, HUD, import map.
 - `src/tetris.js` — pure game logic (board, pieces, scoring, level scaling).
 - `src/world.js` — scene assembly (arch geometry, lights, brick factory).
+- `src/textures.js` — procedural marble-tile color / normal / roughness maps.
+- `src/effects.js` — particle field, camera-shake utility.
 - `src/main.js` — renderer, postprocessing, input, game loop.

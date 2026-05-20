@@ -1,15 +1,16 @@
 import * as THREE from 'three';
 import { pass } from 'three/tsl';
 import { bloom } from 'three/addons/tsl/display/BloomNode.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 
 import { Tetris, COLS, ROWS } from './tetris.js';
 import { buildScene, createBrick, cellPosition } from './world.js';
+import { ParticleField, CameraShake } from './effects.js';
 
 const canvas = document.getElementById('game');
 const loadingEl = document.getElementById('loading');
 const backendEl = document.getElementById('backend');
 
-// WebGPURenderer prefers WebGPU and falls back to WebGL2 automatically.
 const renderer = new THREE.WebGPURenderer({
   canvas,
   antialias: true,
@@ -27,22 +28,34 @@ try {
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+// AgX is more filmic than ACES, especially in the shadow→midtone ramp.
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.08;
+renderer.toneMappingExposure = 1.0;
 
 backendEl.textContent = renderer.backend?.isWebGPUBackend ? 'WEBGPU' : 'WEBGL2';
 
-const { scene, archGroup, piecesGroup } = buildScene();
+const anisotropy = renderer.capabilities?.getMaxAnisotropy?.() ?? 1;
+const { scene, archGroup, piecesGroup } = buildScene({ anisotropy });
 
-const camera = new THREE.PerspectiveCamera(58, 1, 0.1, 100);
-camera.position.set(0, 1.6, 16);
-camera.lookAt(0, 0, 0);
+// Procedural studio environment → PMREM cubemap → IBL for every PBR material.
+// Cheap, no HDR file download, and gives every clearcoat surface something to
+// reflect (so the marble actually reads as polished).
+const pmrem = new THREE.PMREMGenerator(renderer);
+const envTex = pmrem.fromScene(new RoomEnvironment(), 0.06).texture;
+scene.environment = envTex;
+scene.environmentIntensity = 0.4;
 
-// Node-based postprocessing (works under both WebGPU and WebGL2 backends).
+const camera = new THREE.PerspectiveCamera(56, 1, 0.1, 100);
+camera.position.set(0, 4.0, 17);
+camera.lookAt(0, -1.2, 0);
+
+const shake = new CameraShake(camera);
+
+// Node-based postprocessing.
 const renderPipeline = new THREE.RenderPipeline(renderer);
 const scenePass = pass(scene, camera);
 const scenePassColor = scenePass.getTextureNode('output');
-const bloomPass = bloom(scenePassColor, 0.55, 0.55, 0.78);
+const bloomPass = bloom(scenePassColor, 0.32, 0.45, 0.85);
 renderPipeline.outputNode = scenePassColor.add(bloomPass);
 
 function resize() {
@@ -57,6 +70,7 @@ resize();
 // ---- Game wiring ----
 
 const game = new Tetris();
+const particles = new ParticleField(scene);
 
 const boardGroup = new THREE.Group();
 const ghostGroup = new THREE.Group();
@@ -66,7 +80,6 @@ piecesGroup.add(ghostGroup);
 piecesGroup.add(activeGroup);
 
 function clearGroup(g) {
-  // Materials and geometry are shared/cached — only detach.
   while (g.children.length) g.remove(g.children[0]);
 }
 
@@ -129,13 +142,28 @@ function checkGameOver() {
   }
 }
 
+// Spawn a particle burst for each cell in the cleared lines.
+// `cells` are board coordinates — convert to world coords through piecesGroup
+// (which is rotating with the arch) so bursts originate where the bricks were
+// rendered at the moment of clear.
+function burstClearedCells(cleared) {
+  if (!cleared || !cleared.cells.length) return;
+  piecesGroup.updateMatrixWorld();
+  for (const { row, col, color } of cleared.cells) {
+    const local = cellPosition(col, row);
+    const world = local.clone().applyMatrix4(piecesGroup.matrixWorld);
+    particles.burst(world, color, 9);
+  }
+  // Multi-line clears feel impactful — give the camera a shake too.
+  shake.kick(0.12 + cleared.rows.length * 0.08);
+}
+
 let paused = false;
 let fallAccum = 0;
 let lastTime = performance.now();
 let pulse = 0;
 
 window.addEventListener('keydown', (e) => {
-  // Block browser scroll on game keys.
   if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Space'].includes(e.code)) {
     e.preventDefault();
   }
@@ -170,6 +198,7 @@ window.addEventListener('keydown', (e) => {
     case 'ArrowDown': {
       const r = game.softDrop();
       refresh(r.locked);
+      if (r.locked) burstClearedCells(r.cleared);
       checkGameOver();
       break;
     }
@@ -183,6 +212,11 @@ window.addEventListener('keydown', (e) => {
     case 'Space': {
       const r = game.hardDrop();
       refresh(r.locked);
+      if (r.locked) {
+        burstClearedCells(r.cleared);
+        // Always shake a little on hard drop, scaled with the line clear above.
+        shake.kick(0.08);
+      }
       checkGameOver();
       break;
     }
@@ -200,18 +234,22 @@ function animate() {
       fallAccum = 0;
       const r = game.step();
       refresh(r.locked);
+      if (r.locked) burstClearedCells(r.cleared);
       checkGameOver();
     }
     archGroup.rotation.y += dt * game.spinSpeed;
   }
 
-  // Pulse the active piece's shared material.
+  // Pulse the active piece's emissive.
   pulse += dt * 4.5;
-  const intensity = 0.45 + Math.sin(pulse) * 0.2;
+  const intensity = 0.5 + Math.sin(pulse) * 0.2;
   const first = activeGroup.children[0];
   if (first && 'emissiveIntensity' in first.material) {
     first.material.emissiveIntensity = intensity;
   }
+
+  particles.update(dt);
+  shake.update(dt);
 
   renderPipeline.render();
 }
