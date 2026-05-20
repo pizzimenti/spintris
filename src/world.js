@@ -249,14 +249,10 @@ export function buildScene({ anisotropy = 1 } = {}) {
   keystone.receiveShadow = true;
   archGroup.add(keystone);
 
-  const indicator = new THREE.Mesh(
-    new THREE.ConeGeometry(0.22, 0.5, 4),
-    jewelMat
-  );
-  indicator.position.set(0, COL_BASE_Y - 0.45, ARCH_INNER - 0.3);
-  indicator.rotation.x = Math.PI;
-  indicator.rotation.y = Math.PI / 4;
-  archGroup.add(indicator);
+  // (Front-facing indicator cone removed — it was a compass for when the
+  // arch itself spun; now the camera orbits the static arch, so there's
+  // no orientation to indicate. The lingering bright bloom in front of
+  // the arch base was this cone.)
 
   for (const side of [-1, 1]) {
     const j = new THREE.Mesh(
@@ -267,40 +263,84 @@ export function buildScene({ anisotropy = 1 } = {}) {
     archGroup.add(j);
   }
 
-  // ---- Play-field wireframe ----------------------------------------------
+  // ---- Play-field grid (3D cylindrical bars) -----------------------------
+  //
+  // Each grid bar is a proper triangulated cylinder mesh, so:
+  //   - no GL-line aliasing under TRAA
+  //   - SSR / SSGI handle them like any other surface
+  //   - they participate in PBR — future spider-web look just needs
+  //     `transmission`, `thickness`, `iridescence` on this material
+  //
+  // GRID_R defines the bar radius (visible thickness). LANDING_R is the
+  // beefier bottom indicator that shows hard-drop landing position.
+  const GRID_R = 0.025;
+  const LANDING_R = 0.05;
 
-  const gridMat = new THREE.LineBasicMaterial({
-    color: 0x4a5a72,
+  const gridMat = new THREE.MeshPhysicalMaterial({
+    color: 0xc8d6f0,
     transparent: true,
-    opacity: 0.32,
+    opacity: 0.55,
+    metalness: 0.1,
+    roughness: 0.28,
+    clearcoat: 0.7,
+    clearcoatRoughness: 0.15,
+    emissive: 0x1a2a48,
+    emissiveIntensity: 0.18,
+    envMapIntensity: 0.6,
+    // Future spider-web hook: bump transmission to ~0.5, thickness ~0.04,
+    // ior ~1.3, attenuationColor to cool white. Material left dielectric
+    // and PBR-shaped so those are 1-line tweaks.
   });
+
+  const landingMat = new THREE.MeshPhysicalMaterial({
+    color: 0xffb060,
+    emissive: 0xff7022,
+    emissiveIntensity: 0.55,
+    metalness: 0.2,
+    roughness: 0.25,
+    clearcoat: 1.0,
+    clearcoatRoughness: 0.08,
+    envMapIntensity: 0.6,
+  });
+
+  function makeBar(start, end, radius, material) {
+    const dir = new THREE.Vector3().subVectors(end, start);
+    const length = dir.length();
+    const geo = new THREE.CylinderGeometry(radius, radius, length, 10, 1, false);
+    const mesh = new THREE.Mesh(geo, material);
+    mesh.position.copy(start).add(dir.clone().multiplyScalar(0.5));
+    // Default cylinder axis is Y; rotate to point along dir.
+    const up = new THREE.Vector3(0, 1, 0);
+    mesh.quaternion.setFromUnitVectors(up, dir.normalize());
+    // Skip shadows on grid bars — they're thin and would just add noise
+    // to the shadow map without contributing meaningful occlusion.
+    return mesh;
+  }
+
   const fieldGroup = new THREE.Group();
+  // Vertical column dividers
   for (let c = 0; c <= COLS; c++) {
     const x = (c - COLS / 2) * CELL;
-    fieldGroup.add(new THREE.Line(
-      new THREE.BufferGeometry().setFromPoints([
-        new THREE.Vector3(x, -FIELD_H / 2, 0),
-        new THREE.Vector3(x, FIELD_H / 2, 0),
-      ]),
-      gridMat
+    fieldGroup.add(makeBar(
+      new THREE.Vector3(x, -FIELD_H / 2, 0),
+      new THREE.Vector3(x, FIELD_H / 2, 0),
+      GRID_R, gridMat,
     ));
   }
+  // Horizontal row dividers
   for (let r = 0; r <= ROWS; r++) {
     const y = FIELD_H / 2 - r * CELL;
-    fieldGroup.add(new THREE.Line(
-      new THREE.BufferGeometry().setFromPoints([
-        new THREE.Vector3(-FIELD_W / 2, y, 0),
-        new THREE.Vector3(FIELD_W / 2, y, 0),
-      ]),
-      gridMat
+    fieldGroup.add(makeBar(
+      new THREE.Vector3(-FIELD_W / 2, y, 0),
+      new THREE.Vector3(FIELD_W / 2, y, 0),
+      GRID_R, gridMat,
     ));
   }
-  fieldGroup.add(new THREE.Line(
-    new THREE.BufferGeometry().setFromPoints([
-      new THREE.Vector3(-FIELD_W / 2, -FIELD_H / 2, 0),
-      new THREE.Vector3(FIELD_W / 2, -FIELD_H / 2, 0),
-    ]),
-    new THREE.LineBasicMaterial({ color: 0xffa84a })
+  // Landing line — thicker, brighter, signals hard-drop landing position
+  fieldGroup.add(makeBar(
+    new THREE.Vector3(-FIELD_W / 2 - 0.05, -FIELD_H / 2, 0),
+    new THREE.Vector3(FIELD_W / 2 + 0.05, -FIELD_H / 2, 0),
+    LANDING_R, landingMat,
   ));
   archGroup.add(fieldGroup);
 
