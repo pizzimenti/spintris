@@ -1,12 +1,13 @@
 import * as THREE from 'three';
 import {
-  pass, mrt, output, normalView, metalness, roughness,
+  pass, mrt, output, normalView, metalness, roughness, velocity,
   directionToColor, colorToDirection, vec2, vec3, vec4, sample,
 } from 'three/tsl';
 import { bloom } from 'three/addons/tsl/display/BloomNode.js';
-import { fxaa } from 'three/addons/tsl/display/FXAANode.js';
 import { ao } from 'three/addons/tsl/display/GTAONode.js';
 import { ssr } from 'three/addons/tsl/display/SSRNode.js';
+import { ssgi } from 'three/addons/tsl/display/SSGINode.js';
+import { traa } from 'three/addons/tsl/display/TRAANode.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 
 import { Tetris, COLS, ROWS } from './tetris.js';
@@ -106,45 +107,65 @@ const shake = new CameraShake();
 
 // Node-based postprocessing.
 //
-// Chain: scene (MRT: color, normal, metalrough) → GTAO → SSR → bloom → FXAA.
-//
-//   - MRT gives the AO and SSR nodes access to per-pixel normal and material
-//     properties without re-rendering the scene.
-//   - GTAO darkens contact areas (under the arch, between settled bricks,
-//     where the columns meet the floor).
-//   - SSR adds screen-space reflections so the polished marble floor will
-//     actually mirror the columns and falling bricks, not just the IBL probe.
-//   - Bloom and FXAA come last so they operate on the lit + reflected frame.
+// Each pass is toggleable via URL query so we can A/B perf:
+//   ?ssgi=0  ?ssr=0  ?gtao=0  ?traa=0  ?bloom=0
+// Default: SSGI off (it tanks frame rate to <1fps on this WebGL2 backend);
+// AO + SSR + bloom + TRAA on.
+const passes = {
+  gtao: getFlag('gtao', true),
+  ssgi: getFlag('ssgi', false),  // off by default — too expensive here
+  ssr:  getFlag('ssr',  true),
+  bloom: getFlag('bloom', true),
+  traa: getFlag('traa', true),
+};
+function getFlag(name, dflt) {
+  const v = new URLSearchParams(location.search).get(name);
+  if (v === null) return dflt;
+  return v !== '0' && v !== 'false';
+}
+log.info('postprocess passes:', passes);
+
 const renderPipeline = new THREE.RenderPipeline(renderer);
 const scenePass = pass(scene, camera);
 scenePass.setMRT(mrt({
   output,
   normal: directionToColor(normalView),
   metalrough: vec2(metalness, roughness),
+  velocity,
 }));
 
 const sceneColor = scenePass.getTextureNode('output');
 const sceneNormalTex = scenePass.getTextureNode('normal');
 const sceneDepth = scenePass.getTextureNode('depth');
 const sceneMetalRough = scenePass.getTextureNode('metalrough');
+const sceneVelocity = scenePass.getTextureNode('velocity');
 const sceneNormal = sample(uv => colorToDirection(sceneNormalTex.sample(uv)));
 
-const aoPass = ao(sceneDepth, sceneNormal, camera);
-const aoTexture = aoPass.getTextureNode();
-const aoMultiplier = vec4(vec3(aoTexture.r), 1.0);
+let composed = sceneColor;
 
-const ssrPass = ssr(
-  sceneColor,
-  sceneDepth,
-  sceneNormal,
-  sceneMetalRough.r,
-  sceneMetalRough.g,
-);
+if (passes.gtao) {
+  const aoPass = ao(sceneDepth, sceneNormal, camera);
+  const aoTexture = aoPass.getTextureNode();
+  composed = composed.mul(vec4(vec3(aoTexture.r), 1.0));
+}
 
-const aoLit = sceneColor.mul(aoMultiplier);
-const withReflections = aoLit.add(ssrPass.rgb);
-const bloomPass = bloom(withReflections, 0.32, 0.45, 0.85);
-renderPipeline.outputNode = fxaa(withReflections.add(bloomPass));
+if (passes.ssgi) {
+  const ssgiPass = ssgi(sceneColor, sceneDepth, sceneNormal, camera);
+  composed = composed.add(ssgiPass);
+}
+
+if (passes.ssr) {
+  const ssrPass = ssr(sceneColor, sceneDepth, sceneNormal, sceneMetalRough.r, sceneMetalRough.g);
+  composed = composed.add(ssrPass.rgb);
+}
+
+if (passes.bloom) {
+  composed = composed.add(bloom(composed, 0.32, 0.45, 0.85));
+}
+
+renderPipeline.outputNode = passes.traa
+  ? traa(composed, sceneDepth, sceneVelocity, camera)
+  : composed;
 
 function resize() {
   const w = window.innerWidth, h = window.innerHeight;

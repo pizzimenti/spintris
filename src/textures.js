@@ -185,6 +185,141 @@ export function makeMarbleNormalFromColor(colorTex, strength = 1.2) {
   return tex;
 }
 
+// ---- Poured concrete (floor) -------------------------------------------
+
+// Procedural concrete map for a fancy-garage epoxy floor. Single non-tiling
+// image covering the full floor plane (wrap=ClampToEdge). Imperfections are
+// placed at randomised positions so nothing reads as repeated:
+//   - large soft color patches for blotchy pour variation
+//   - thousands of fine aggregate flecks
+//   - larger pebble inclusions
+//   - dark pits & pock marks
+//   - hairline cracks (multi-segment quadratic beziers)
+//   - light stain / oil blobs
+//   - control joints (saw-cut grid) with soft shadow rolloffs
+export function makeConcreteColorTexture(size = 2048) {
+  const c = document.createElement('canvas');
+  c.width = c.height = size;
+  const ctx = c.getContext('2d');
+
+  // Base — neutral gray with a slow radial gradient to break up flatness
+  const base = ctx.createRadialGradient(
+    size * 0.3, size * 0.4, size * 0.05,
+    size * 0.55, size * 0.55, size * 0.75,
+  );
+  base.addColorStop(0, '#6c6f73');
+  base.addColorStop(0.5, '#5d6064');
+  base.addColorStop(1, '#52555a');
+  ctx.fillStyle = base;
+  ctx.fillRect(0, 0, size, size);
+
+  // Warm + cool color patches — natural pour variation
+  for (let i = 0; i < 32; i++) {
+    const x = Math.random() * size;
+    const y = Math.random() * size;
+    const r = 180 + Math.random() * 460;
+    const warm = Math.random() < 0.5;
+    const hue = warm ? 25 + Math.random() * 25 : 200 + Math.random() * 20;
+    const sat = 4 + Math.random() * 8;
+    const light = 28 + Math.random() * 15;
+    ctx.fillStyle = `hsla(${hue}, ${sat}%, ${light}%, ${0.06 + Math.random() * 0.08})`;
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // Fine aggregate — dense pepper of small flecks
+  for (let i = 0; i < 9000; i++) {
+    const lum = 70 + Math.random() * 70;
+    ctx.fillStyle = `rgba(${lum}, ${lum * 0.99 | 0}, ${lum * 0.97 | 0}, ${0.05 + Math.random() * 0.15})`;
+    ctx.beginPath();
+    ctx.arc(Math.random() * size, Math.random() * size, 0.5 + Math.random() * 1.8, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // Larger pebbles
+  for (let i = 0; i < 240; i++) {
+    const lum = 50 + Math.random() * 90;
+    ctx.fillStyle = `rgba(${lum}, ${lum}, ${lum * 0.95 | 0}, ${0.18 + Math.random() * 0.22})`;
+    ctx.beginPath();
+    ctx.arc(Math.random() * size, Math.random() * size, 2 + Math.random() * 5.5, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // Pits & pock marks
+  for (let i = 0; i < 450; i++) {
+    ctx.fillStyle = `rgba(18, 18, 22, ${0.35 + Math.random() * 0.5})`;
+    ctx.beginPath();
+    ctx.arc(Math.random() * size, Math.random() * size, 0.5 + Math.random() * 1.6, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // Hairline cracks — multi-segment quadratic beziers
+  for (let i = 0; i < 18; i++) {
+    ctx.strokeStyle = `rgba(16, 18, 22, ${0.35 + Math.random() * 0.45})`;
+    ctx.lineWidth = 0.4 + Math.random() * 0.9;
+    let x = Math.random() * size, y = Math.random() * size;
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    const segments = 5 + Math.floor(Math.random() * 9);
+    for (let s = 0; s < segments; s++) {
+      const dx = (Math.random() - 0.5) * 220;
+      const dy = (Math.random() - 0.5) * 220;
+      const cx = x + dx * 0.5 + (Math.random() - 0.5) * 60;
+      const cy = y + dy * 0.5 + (Math.random() - 0.5) * 60;
+      x += dx; y += dy;
+      ctx.quadraticCurveTo(cx, cy, x, y);
+    }
+    ctx.stroke();
+  }
+
+  // Stain / oil blobs — soft radial fades
+  for (let i = 0; i < 9; i++) {
+    const x = Math.random() * size;
+    const y = Math.random() * size;
+    const r = 50 + Math.random() * 220;
+    const oil = Math.random() < 0.45;
+    const lum = oil ? 22 : 90;
+    const alpha = 0.05 + Math.random() * 0.12;
+    const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+    g.addColorStop(0, `rgba(${lum}, ${lum}, ${lum * 0.92 | 0}, ${alpha})`);
+    g.addColorStop(0.6, `rgba(${lum}, ${lum}, ${lum * 0.92 | 0}, ${alpha * 0.4})`);
+    g.addColorStop(1, 'rgba(0, 0, 0, 0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(x - r, y - r, r * 2, r * 2);
+  }
+
+  // Control joints (saw cuts) — straight thin dark lines every quarter-floor
+  // with soft shadow rolloff so they read as recessed grooves under epoxy.
+  const grid = size / 4;
+  for (let i = 1; i < 4; i++) {
+    const p = i * grid;
+    // Cut itself
+    ctx.fillStyle = '#13151a';
+    ctx.fillRect(p - 1.5, 0, 3, size);
+    ctx.fillRect(0, p - 1.5, size, 3);
+    // Soft shadow band
+    const gv = ctx.createLinearGradient(p - 10, 0, p + 10, 0);
+    gv.addColorStop(0, 'rgba(0, 0, 0, 0)');
+    gv.addColorStop(0.5, 'rgba(0, 0, 0, 0.16)');
+    gv.addColorStop(1, 'rgba(0, 0, 0, 0)');
+    ctx.fillStyle = gv;
+    ctx.fillRect(p - 10, 0, 20, size);
+    const gh = ctx.createLinearGradient(0, p - 10, 0, p + 10);
+    gh.addColorStop(0, 'rgba(0, 0, 0, 0)');
+    gh.addColorStop(0.5, 'rgba(0, 0, 0, 0.16)');
+    gh.addColorStop(1, 'rgba(0, 0, 0, 0)');
+    ctx.fillStyle = gh;
+    ctx.fillRect(0, p - 10, size, 20);
+  }
+
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.userData.canvas = c;
+  return tex;
+}
+
 // Roughness drops slightly in the bright vein areas — polished quartz is
 // less rough than its matte pink matrix.
 export function makeMarbleRoughnessFromColor(colorTex) {

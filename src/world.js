@@ -1,9 +1,7 @@
 import * as THREE from 'three';
 import { COLS, ROWS } from './tetris.js';
 import {
-  makeTileColorTexture,
-  makeTileNormalTexture,
-  makeTileRoughnessTexture,
+  makeConcreteColorTexture,
   makeMarbleColorTexture,
   makeMarbleNormalFromColor,
   makeMarbleRoughnessFromColor,
@@ -56,34 +54,44 @@ export function buildScene({ anisotropy = 1 } = {}) {
 
   // ---- Floor: tiled marble with grout, env-mapped reflections ------------
 
-  // 2048 floor textures — softens minification at grazing angles and the
-  // tile maps aren't on the Sobel hot path so this is essentially free.
-  const tileColor = makeTileColorTexture(2048);
-  const tileNormal = makeTileNormalTexture(2048);
-  const tileRough = makeTileRoughnessTexture(2048);
-  for (const t of [tileColor, tileNormal, tileRough]) {
+  // Poured concrete with fancy-garage epoxy clearcoat. ONE non-tiling
+  // texture covers the whole floor — every crack, pit, stain, and saw-cut
+  // is at a unique world position, so the eye never catches a repeat.
+  const concreteColor = makeConcreteColorTexture(2048);
+  const concreteNormal = makeMarbleNormalFromColor(concreteColor, 0.7);
+  const concreteRough = makeMarbleRoughnessFromColor(concreteColor);
+  for (const t of [concreteColor, concreteNormal, concreteRough]) {
     t.anisotropy = anisotropy;
-    t.repeat.set(5, 5);
+    t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping;
+    t.repeat.set(1, 1);
+    t.needsUpdate = true;
   }
 
   const floorMat = new THREE.MeshPhysicalMaterial({
     color: 0xffffff,
-    map: tileColor,
-    normalMap: tileNormal,
-    normalScale: new THREE.Vector2(0.65, 0.65),
-    roughnessMap: tileRough,
+    map: concreteColor,
+    normalMap: concreteNormal,
+    // Concrete bumps are subtle — the epoxy seal smooths them out optically.
+    normalScale: new THREE.Vector2(0.35, 0.35),
+    roughnessMap: concreteRough,
     roughness: 1.0,
-    // Slight metalness boost so SSR has something to lock onto — pure
-    // dielectric (0.0) is technically correct for marble but SSR's Fresnel
-    // pickup is too subtle on this surface without it. 0.08 still reads
-    // as polished stone, not as a metal floor.
+    // Slight metalness so SSR has Fresnel to bite into. Concrete is a
+    // dielectric, but the epoxy layer's IOR makes the composite read
+    // slightly reflective at all angles — 0.08 captures that without
+    // pushing it into "metal floor" territory.
     metalness: 0.08,
-    clearcoat: 0.9,
-    clearcoatRoughness: 0.16,
+    // Full polished epoxy clearcoat — this is what defines the fancy
+    // garage look. Concrete texture shows through underneath; the
+    // clearcoat handles all the gloss.
+    clearcoat: 1.0,
+    clearcoatRoughness: 0.045,
     envMapIntensity: 1.0,
   });
 
-  const floor = new THREE.Mesh(new THREE.PlaneGeometry(80, 80), floorMat);
+  // Smaller floor plane (40×40) since the concrete texture doesn't tile —
+  // beyond that, fog absorbs the edge. Avoids stretching the single 2048²
+  // image across a huge plane and losing texel density.
+  const floor = new THREE.Mesh(new THREE.PlaneGeometry(40, 40), floorMat);
   floor.rotation.x = -Math.PI / 2;
   floor.position.y = FLOOR_Y;
   floor.receiveShadow = true;
