@@ -1,5 +1,43 @@
 import * as THREE from 'three';
 
+// Draw grout / seam bands with soft (anti-aliased) edges. `core` is the
+// fully-opaque interior width in px; `falloff` is the half-transparent
+// fade band on each side. Banks anti-aliasing into the texture so the
+// edges don't stairstep when the floor is foreshortened.
+function drawSoftBands(ctx, size, tilesPerSide, tilePx, color, core, falloff) {
+  const total = core + 2 * falloff;
+  const half = total / 2;
+  // Parse "#rrggbb" → rgba components for the transparent endpoints.
+  const hex = color.replace('#', '');
+  const r = parseInt(hex.slice(0, 2), 16);
+  const g = parseInt(hex.slice(2, 4), 16);
+  const b = parseInt(hex.slice(4, 6), 16);
+  const transparent = `rgba(${r}, ${g}, ${b}, 0)`;
+  const opaque = color;
+  const stopIn = falloff / total;
+  const stopOut = 1 - stopIn;
+
+  for (let i = 0; i <= tilesPerSide; i++) {
+    const p = i * tilePx;
+    // Vertical band
+    const gv = ctx.createLinearGradient(p - half, 0, p + half, 0);
+    gv.addColorStop(0, transparent);
+    gv.addColorStop(stopIn, opaque);
+    gv.addColorStop(stopOut, opaque);
+    gv.addColorStop(1, transparent);
+    ctx.fillStyle = gv;
+    ctx.fillRect(p - half, 0, total, size);
+    // Horizontal band
+    const gh = ctx.createLinearGradient(0, p - half, 0, p + half);
+    gh.addColorStop(0, transparent);
+    gh.addColorStop(stopIn, opaque);
+    gh.addColorStop(stopOut, opaque);
+    gh.addColorStop(1, transparent);
+    ctx.fillStyle = gh;
+    ctx.fillRect(0, p - half, size, total);
+  }
+}
+
 // ---- Pink marble (columns / arch) --------------------------------------
 
 // Multi-layer canvas painting: peach-pink base, overlapping color blobs for
@@ -218,14 +256,12 @@ export function makeTileColorTexture(size = 1024, tilesPerSide = 4) {
     }
   }
 
-  // Grout — very dark, wide, high contrast against the tile face
-  ctx.fillStyle = '#08080c';
-  const grout = 6;
-  for (let i = 0; i <= tilesPerSide; i++) {
-    const p = i * tile;
-    ctx.fillRect(p - grout / 2, 0, grout, size);
-    ctx.fillRect(0, p - grout / 2, size, grout);
-  }
+  // Grout — soft gradient bands instead of crisp rectangles. The fade
+  // at each edge bakes anti-aliasing into the texture itself, so the
+  // grout doesn't stairstep when the floor is foreshortened at near-
+  // parallel viewing angles (where anisotropic filtering alone can't
+  // fully compensate for hard pixel transitions in the source).
+  drawSoftBands(ctx, size, tilesPerSide, tile, '#08080c', 5, 4);
 
   const tex = new THREE.CanvasTexture(c);
   tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
@@ -292,14 +328,10 @@ export function makeTileRoughnessTexture(size = 1024, tilesPerSide = 4) {
   ctx.fillStyle = '#1c1c1e';
   ctx.fillRect(0, 0, size, size);
 
-  // Grout = bright value = high roughness (matte)
-  ctx.fillStyle = '#d8d8d8';
-  const grout = 6;
-  for (let i = 0; i <= tilesPerSide; i++) {
-    const p = i * tile;
-    ctx.fillRect(p - grout / 2, 0, grout, size);
-    ctx.fillRect(0, p - grout / 2, size, grout);
-  }
+  // Grout = bright value = high roughness (matte). Soft edges so the
+  // roughness transition matches the color map's softened grout and
+  // doesn't show its own aliased band under specular highlights.
+  drawSoftBands(ctx, size, tilesPerSide, tile, '#d8d8d8', 5, 4);
 
   const tex = new THREE.CanvasTexture(c);
   tex.wrapS = tex.wrapT = THREE.RepeatWrapping;

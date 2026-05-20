@@ -7,16 +7,27 @@ import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { Tetris, COLS, ROWS } from './tetris.js';
 import { buildScene, createBrick, cellPosition } from './world.js';
 import { ParticleField, CameraShake } from './effects.js';
+import { log, reportRenderer, reportScene, startFrameMonitor, isDebug } from './diag.js';
 
 const canvas = document.getElementById('game');
 const loadingEl = document.getElementById('loading');
 const backendEl = document.getElementById('backend');
 
+log.info('boot · UA: ' + navigator.userAgent);
+
 const renderer = new THREE.WebGPURenderer({
   canvas,
   antialias: true,
-  samples: 4,
+  // 8× MSAA when supported (Radeon 760M advertises maxSamples=8 on this
+  // driver). The renderer / backend will clamp down if the platform can't
+  // service it; reportRenderer() logs the effective sample count.
+  samples: 8,
   powerPreference: 'high-performance',
+  // Higher precision GLSL when WebGL2 fallback kicks in; on most desktop
+  // drivers this is already the default but mobile / integrated GPUs vary.
+  precision: 'highp',
+  // Force a depth+stencil 24-bit buffer for crisp shadow comparisons.
+  stencil: false,
 });
 
 try {
@@ -30,13 +41,30 @@ try {
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-// AgX is more filmic than ACES, especially in the shadow→midtone ramp.
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.0;
 
 backendEl.textContent = renderer.backend?.isWebGPUBackend ? 'WEBGPU' : 'WEBGL2';
 
-const anisotropy = renderer.capabilities?.getMaxAnisotropy?.() ?? 1;
+reportRenderer(renderer);
+
+// renderer.capabilities.getMaxAnisotropy() returns 1 under WebGPURenderer's
+// WebGL2 fallback even when EXT_texture_filter_anisotropic advertises 16
+// (issue: capabilities proxy isn't propagating the extension). Query the
+// GL context directly so anisotropic filtering actually engages.
+function detectMaxAnisotropy() {
+  const reported = renderer.capabilities?.getMaxAnisotropy?.() ?? 1;
+  const gl = renderer.getContext?.();
+  const ext = gl?.getExtension?.('EXT_texture_filter_anisotropic');
+  const direct = ext ? gl.getParameter(ext.MAX_TEXTURE_MAX_ANISOTROPY_EXT) : 1;
+  if (direct > reported) {
+    log.warn(`capabilities reported anisotropy ${reported} but EXT reports ${direct} — using ${direct}`);
+    return direct;
+  }
+  return reported;
+}
+const anisotropy = detectMaxAnisotropy();
+log.info(`anisotropy in use: ${anisotropy}`);
 const { scene, archGroup, piecesGroup } = buildScene({ anisotropy });
 
 // Procedural studio environment → PMREM cubemap → IBL for every PBR material.
@@ -281,5 +309,8 @@ function animate() {
 }
 
 refresh(true);
+reportScene(scene);
+startFrameMonitor(renderer);
 loadingEl.classList.add('hide');
+if (isDebug) log.info('debug mode active (use ?debug=1)');
 renderer.setAnimationLoop(animate);

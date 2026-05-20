@@ -56,9 +56,11 @@ export function buildScene({ anisotropy = 1 } = {}) {
 
   // ---- Floor: tiled marble with grout, env-mapped reflections ------------
 
-  const tileColor = makeTileColorTexture();
-  const tileNormal = makeTileNormalTexture();
-  const tileRough = makeTileRoughnessTexture();
+  // 2048 floor textures — softens minification at grazing angles and the
+  // tile maps aren't on the Sobel hot path so this is essentially free.
+  const tileColor = makeTileColorTexture(2048);
+  const tileNormal = makeTileNormalTexture(2048);
+  const tileRough = makeTileRoughnessTexture(2048);
   for (const t of [tileColor, tileNormal, tileRough]) {
     t.anisotropy = anisotropy;
     t.repeat.set(5, 5);
