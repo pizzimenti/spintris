@@ -16,7 +16,7 @@ const COL_HEIGHT = 11.0;
 const COL_BASE_Y = -FIELD_H / 2 - 0.8;
 const FLOOR_Y = COL_BASE_Y - 0.3;
 
-export function buildScene({ anisotropy = 1 } = {}) {
+export function buildScene({ anisotropy = 1, shadowMapSize = 4096 } = {}) {
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x04050b);
   scene.fog = new THREE.FogExp2(0x05060c, 0.026);
@@ -27,8 +27,8 @@ export function buildScene({ anisotropy = 1 } = {}) {
 
   const key = new THREE.DirectionalLight(0xfff0d0, 2.6);
   key.position.set(10, 16, 12);
-  key.castShadow = true;
-  key.shadow.mapSize.set(4096, 4096);
+  key.castShadow = shadowMapSize > 0;
+  key.shadow.mapSize.set(shadowMapSize || 1024, shadowMapSize || 1024);
   key.shadow.camera.near = 1;
   key.shadow.camera.far = 60;
   key.shadow.camera.left = -16;

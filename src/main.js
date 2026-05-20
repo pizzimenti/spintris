@@ -22,19 +22,62 @@ const backendEl = document.getElementById('backend');
 
 log.info('boot · UA: ' + navigator.userAgent);
 
+// ---- Quality presets ----------------------------------------------------
+//
+// Selected via the in-game slider; persisted in localStorage; URL ?quality=
+// overrides. Each preset chooses what's expensive to enable, since several
+// of these levers (forceWebGL, samples, shadowMapSize) can only be set at
+// renderer construction time — changing them mid-session requires a reload.
+const QUALITY_PRESETS = {
+  low: {
+    label: 'low',
+    forceWebGL: true,        // skip WebGPU even when available; fewer surprises
+    samples: 1,              // no MSAA
+    antialias: false,
+    pixelRatioCap: 1,
+    shadowMapSize: 1024,
+    shadowType: 'PCF',
+    passes: { gtao: false, ssgi: false, ssr: false, bloom: true,  traa: false, denoise: false },
+  },
+  medium: {
+    label: 'medium',
+    forceWebGL: false,
+    samples: 4,
+    antialias: true,
+    pixelRatioCap: 1.5,
+    shadowMapSize: 2048,
+    shadowType: 'PCFSoft',
+    passes: { gtao: true,  ssgi: false, ssr: true,  bloom: true,  traa: true,  denoise: false },
+  },
+  high: {
+    label: 'high',
+    forceWebGL: false,
+    samples: 4,
+    antialias: true,
+    pixelRatioCap: 2,
+    shadowMapSize: 4096,
+    shadowType: 'PCFSoft',
+    passes: { gtao: true,  ssgi: true,  ssr: true,  bloom: true,  traa: true,  denoise: true },
+  },
+};
+
+function resolveQuality() {
+  const url = new URLSearchParams(location.search).get('quality');
+  const stored = (() => { try { return localStorage.getItem('spintris.quality'); } catch { return null; } })();
+  const pick = url || stored || 'high';
+  return QUALITY_PRESETS[pick] ? pick : 'high';
+}
+const qualityName = resolveQuality();
+const quality = QUALITY_PRESETS[qualityName];
+log.info(`quality preset: ${qualityName}`);
+
 const renderer = new THREE.WebGPURenderer({
   canvas,
-  antialias: true,
-  // 4× MSAA. The WebGL2 backend advertised maxSamples=8 but on the WebGPU
-  // backend asking for 8 dropped framerate to ~0.1 fps on this adapter
-  // (Dawn appears to fall off a fast path). 4× is the WebGPU spec-required
-  // minimum and well supported.
-  samples: 4,
+  antialias: quality.antialias,
+  samples: quality.samples,
+  forceWebGL: quality.forceWebGL,
   powerPreference: 'high-performance',
-  // Higher precision GLSL when WebGL2 fallback kicks in; on most desktop
-  // drivers this is already the default but mobile / integrated GPUs vary.
   precision: 'highp',
-  // Force a depth+stencil 24-bit buffer for crisp shadow comparisons.
   stencil: false,
 });
 
@@ -46,9 +89,9 @@ try {
   throw err;
 }
 
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, quality.pixelRatioCap));
+renderer.shadowMap.enabled = quality.shadowMapSize > 0;
+renderer.shadowMap.type = quality.shadowType === 'PCFSoft' ? THREE.PCFSoftShadowMap : THREE.PCFShadowMap;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.0;
 
@@ -83,7 +126,7 @@ function detectMaxAnisotropy() {
 }
 const anisotropy = detectMaxAnisotropy();
 log.info(`anisotropy in use: ${anisotropy}`);
-const { scene, archGroup, piecesGroup } = buildScene({ anisotropy });
+const { scene, archGroup, piecesGroup } = buildScene({ anisotropy, shadowMapSize: quality.shadowMapSize });
 
 // Procedural studio environment → PMREM cubemap → IBL for every PBR material.
 // Cheap, no HDR file download, and gives every clearcoat surface something to
@@ -123,15 +166,16 @@ const shake = new CameraShake();
 //   ?ssgi=0  ?ssr=0  ?gtao=0  ?traa=0  ?bloom=0
 // Default: SSGI off (it tanks frame rate to <1fps on this WebGL2 backend);
 // AO + SSR + bloom + TRAA on.
-// SSGI defaults on when the WebGPU backend is active — on WebGL2 fallback
-// it tanks frame rate to <1 fps. Override either way via ?ssgi=1 / ?ssgi=0.
-const onWebGPU = !!renderer.backend?.isWebGPUBackend;
+// Pass enablement starts from the quality preset and is overridable per-pass
+// via URL query (?ssgi=0, ?gtao=1, etc.) for ad-hoc testing without
+// recompiling.
 const passes = {
-  gtao: getFlag('gtao', true),
-  ssgi: getFlag('ssgi', onWebGPU),
-  ssr:  getFlag('ssr',  true),
-  bloom: getFlag('bloom', true),
-  traa: getFlag('traa', true),
+  gtao:    getFlag('gtao',    quality.passes.gtao),
+  ssgi:    getFlag('ssgi',    quality.passes.ssgi),
+  ssr:     getFlag('ssr',     quality.passes.ssr),
+  bloom:   getFlag('bloom',   quality.passes.bloom),
+  traa:    getFlag('traa',    quality.passes.traa),
+  denoise: getFlag('denoise', quality.passes.denoise),
 };
 function getFlag(name, dflt) {
   const v = new URLSearchParams(location.search).get(name);
@@ -165,20 +209,19 @@ if (passes.gtao) {
 }
 
 if (passes.ssgi) {
-  // SSGI uses stochastic ray-marching; without denoising you see the
-  // raw Bayer / blue-noise sample pattern as a halftone overlay around
-  // bright contributors (visible on the columns near the falling pieces).
-  // Bilateral denoise with depth + normal keeps edges sharp while
-  // smoothing the stochastic dither.
   const ssgiPass = ssgi(sceneColor, sceneDepth, sceneNormal, camera);
-  const ssgiClean = denoise(ssgiPass, sceneDepth, sceneNormal, camera);
-  composed = composed.add(ssgiClean);
+  const ssgiOut = passes.denoise
+    ? denoise(ssgiPass, sceneDepth, sceneNormal, camera)
+    : ssgiPass;
+  composed = composed.add(ssgiOut);
 }
 
 if (passes.ssr) {
   const ssrPass = ssr(sceneColor, sceneDepth, sceneNormal, sceneMetalRough.r, sceneMetalRough.g);
-  const ssrClean = denoise(ssrPass, sceneDepth, sceneNormal, camera);
-  composed = composed.add(ssrClean.rgb);
+  const ssrOut = passes.denoise
+    ? denoise(ssrPass, sceneDepth, sceneNormal, camera).rgb
+    : ssrPass.rgb;
+  composed = composed.add(ssrOut);
 }
 
 if (passes.bloom) {
@@ -197,6 +240,90 @@ function resize() {
 }
 window.addEventListener('resize', resize);
 resize();
+
+// ---- Engine HUD + quality slider ----
+
+const eng = {
+  backend: document.getElementById('eng-backend'),
+  fps:     document.getElementById('eng-fps'),
+  frame:   document.getElementById('eng-frame'),
+  load:    document.getElementById('eng-load'),
+  calls:   document.getElementById('eng-calls'),
+  tris:    document.getElementById('eng-tris'),
+  pixels:  document.getElementById('eng-pixels'),
+  adapter: document.getElementById('eng-adapter'),
+};
+
+const isWebGPU = !!renderer.backend?.isWebGPUBackend;
+eng.backend.textContent = isWebGPU ? 'WebGPU' : 'WebGL 2';
+
+// Adapter name — async on WebGPU, sync on WebGL 2.
+if (isWebGPU) {
+  navigator.gpu?.requestAdapter?.().then(a => {
+    const i = a?.info;
+    if (i) eng.adapter.textContent = [i.vendor, i.architecture, i.device].filter(Boolean).join(' · ');
+  }).catch(() => { eng.adapter.textContent = 'adapter info unavailable'; });
+} else {
+  const ctx = renderer.getContext?.();
+  const dbg = ctx?.getExtension?.('WEBGL_debug_renderer_info');
+  if (dbg && ctx) {
+    const r = ctx.getParameter(dbg.UNMASKED_RENDERER_WEBGL) ?? '?';
+    eng.adapter.textContent = r;
+  }
+}
+
+// Resolution / pixel ratio
+function updatePixels() {
+  const w = renderer.domElement.width, h = renderer.domElement.height;
+  eng.pixels.textContent = `${w}×${h} (${renderer.getPixelRatio().toFixed(2)}×)`;
+}
+updatePixels();
+window.addEventListener('resize', updatePixels);
+
+// Rolling FPS / frame-time / load buffer, polled into the HUD every 500ms.
+// GPU temperature and utilisation aren't exposed by any browser API; closest
+// honest proxy is frame-time ÷ 16.67ms-budget displayed as a "GPU load %".
+const SAMPLES = 60;
+const dtBuf = [];
+let dtLast = performance.now();
+
+function tickEngineSample() {
+  const now = performance.now();
+  dtBuf.push(now - dtLast);
+  dtLast = now;
+  if (dtBuf.length > SAMPLES) dtBuf.shift();
+}
+
+setInterval(() => {
+  if (!dtBuf.length) return;
+  const sorted = [...dtBuf].sort((a, b) => a - b);
+  const median = sorted[Math.floor(sorted.length / 2)];
+  eng.fps.textContent = `${(1000 / median).toFixed(0)}`;
+  eng.frame.textContent = `${median.toFixed(1)} ms`;
+  // GPU "load" as fraction of 16.67ms (60fps budget). >100% = we missed the
+  // budget that frame on average. Honest caveat: this is just frame-time,
+  // not real GPU busy %, since browsers don't expose that.
+  const loadPct = (median / 16.67) * 100;
+  eng.load.textContent = `${Math.min(999, loadPct).toFixed(0)}%`;
+  const info = renderer.info?.render;
+  if (info) {
+    eng.calls.textContent = info.calls?.toLocaleString() ?? '—';
+    eng.tris.textContent = info.triangles?.toLocaleString() ?? '—';
+  }
+}, 500);
+
+// Quality slider — highlight current, save+reload on click.
+for (const btn of document.querySelectorAll('#quality button')) {
+  if (btn.dataset.q === qualityName) btn.classList.add('active');
+  btn.addEventListener('click', () => {
+    if (btn.dataset.q === qualityName) return;
+    try { localStorage.setItem('spintris.quality', btn.dataset.q); } catch {}
+    // Strip any ?quality= URL override so the new stored choice wins.
+    const u = new URL(location.href);
+    u.searchParams.delete('quality');
+    location.href = u.toString();
+  });
+}
 
 // ---- Game wiring ----
 
@@ -386,6 +513,7 @@ function animate() {
   particles.update(dt);
 
   renderPipeline.render();
+  tickEngineSample();
 }
 
 refresh(true);
