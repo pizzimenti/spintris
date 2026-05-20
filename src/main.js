@@ -46,10 +46,27 @@ scene.environment = envTex;
 scene.environmentIntensity = 0.4;
 
 const camera = new THREE.PerspectiveCamera(56, 1, 0.1, 100);
-camera.position.set(0, 4.0, 17);
-camera.lookAt(0, -1.2, 0);
 
-const shake = new CameraShake(camera);
+// Camera orbits the static arch instead of the arch spinning in place — the
+// columns belong to the floor, so it has to be the viewer who walks around.
+// The disorientation gameplay still works: piece motion is in world-X, so
+// when the camera is behind the field, LEFT visually moves the piece RIGHT.
+const ORBIT_RADIUS = 17;
+const ORBIT_HEIGHT = 4.0;
+const ORBIT_LOOK_Y = -1.2;
+let orbitAngle = 0;
+
+function positionOrbit() {
+  camera.position.set(
+    Math.sin(orbitAngle) * ORBIT_RADIUS,
+    ORBIT_HEIGHT,
+    Math.cos(orbitAngle) * ORBIT_RADIUS,
+  );
+  camera.lookAt(0, ORBIT_LOOK_Y, 0);
+}
+positionOrbit();
+
+const shake = new CameraShake();
 
 // Node-based postprocessing.
 const renderPipeline = new THREE.RenderPipeline(renderer);
@@ -173,7 +190,8 @@ window.addEventListener('keydown', (e) => {
       game.reset();
       hideOverlay();
       paused = false;
-      archGroup.rotation.y = 0;
+      orbitAngle = 0;
+      positionOrbit();
       fallAccum = 0;
       refresh(true);
     }
@@ -237,8 +255,11 @@ function animate() {
       if (r.locked) burstClearedCells(r.cleared);
       checkGameOver();
     }
-    archGroup.rotation.y += dt * game.spinSpeed;
+    orbitAngle += dt * game.spinSpeed;
   }
+
+  positionOrbit();
+  shake.apply(camera, dt);
 
   // Pulse the active piece's emissive.
   pulse += dt * 4.5;
@@ -249,7 +270,6 @@ function animate() {
   }
 
   particles.update(dt);
-  shake.update(dt);
 
   renderPipeline.render();
 }

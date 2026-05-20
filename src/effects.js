@@ -64,30 +64,20 @@ export class ParticleField {
   }
 }
 
-// Tiny camera-shake utility — call kick() on impact, then update() per frame.
+// Camera-shake utility — call kick() on impact, then apply() per frame AFTER
+// the camera has been positioned by whatever else moves it (orbit, etc).
 // Trauma decays linearly; offset is trauma² so big shakes drop off naturally.
 export class CameraShake {
-  constructor(camera) {
-    this.camera = camera;
-    this.base = camera.position.clone();
-    this.trauma = 0;
-  }
-
-  setBase(v) { this.base.copy(v); }
+  constructor() { this.trauma = 0; }
 
   kick(amount) { this.trauma = Math.min(1, this.trauma + amount); }
 
-  update(dt) {
-    if (this.trauma > 0) {
-      const s = this.trauma * this.trauma;
-      this.camera.position.set(
-        this.base.x + (Math.random() - 0.5) * s * 0.6,
-        this.base.y + (Math.random() - 0.5) * s * 0.4,
-        this.base.z + (Math.random() - 0.5) * s * 0.3
-      );
-      this.trauma = Math.max(0, this.trauma - dt * 1.6);
-    } else if (!this.camera.position.equals(this.base)) {
-      this.camera.position.copy(this.base);
-    }
+  apply(camera, dt) {
+    if (this.trauma <= 0) return;
+    const s = this.trauma * this.trauma;
+    camera.position.x += (Math.random() - 0.5) * s * 0.6;
+    camera.position.y += (Math.random() - 0.5) * s * 0.4;
+    camera.position.z += (Math.random() - 0.5) * s * 0.3;
+    this.trauma = Math.max(0, this.trauma - dt * 1.6);
   }
 }
