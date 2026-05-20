@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { COLS, ROWS } from './tetris.js';
 import {
   makeConcreteColorTexture,
+  makeDisplacementFromColor,
   makeMarbleColorTexture,
   makeMarbleNormalFromColor,
   makeMarbleRoughnessFromColor,
@@ -93,13 +94,16 @@ export function buildScene({ anisotropy = 1, shadowMapSize = 4096 } = {}) {
 
   // ---- Floor: polished cured concrete with mirror clearcoat -------------
 
-  // Poured concrete with fancy-garage epoxy clearcoat. ONE non-tiling
-  // texture covers the whole floor — every crack, pit, stain, and saw-cut
-  // is at a unique world position, so the eye never catches a repeat.
+  // Poured concrete with crackle/pitting/missing chunks + actual vertex
+  // displacement for the deeper marring. ONE non-tiling texture covers
+  // the floor; every defect is at a unique world position. Heightmap is
+  // luminance-derived so the dark pits/chunks/cracks in the color map
+  // physically recess into the geometry on the subdivided floor mesh.
   const concreteColor = makeConcreteColorTexture(2048);
-  const concreteNormal = makeMarbleNormalFromColor(concreteColor, 0.7);
+  const concreteNormal = makeMarbleNormalFromColor(concreteColor, 1.4);
   const concreteRough = makeMarbleRoughnessFromColor(concreteColor);
-  for (const t of [concreteColor, concreteNormal, concreteRough]) {
+  const concreteDisp = makeDisplacementFromColor(concreteColor, 1.8);
+  for (const t of [concreteColor, concreteNormal, concreteRough, concreteDisp]) {
     t.anisotropy = anisotropy;
     t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping;
     t.repeat.set(1, 1);
@@ -110,28 +114,34 @@ export function buildScene({ anisotropy = 1, shadowMapSize = 4096 } = {}) {
     color: 0xffffff,
     map: concreteColor,
     normalMap: concreteNormal,
-    // Bumps barely visible under the polish — real cured warehouse
-    // concrete reads almost mirror-flat at the macro level. Detail
-    // shows in the color map (aggregate) but not in geometry.
-    normalScale: new THREE.Vector2(0.18, 0.18),
+    // Bumps amped up now that we have actual geometry displacement —
+    // the normal map handles the high-frequency pit shading while the
+    // displacement map handles the chunk-missing depth.
+    normalScale: new THREE.Vector2(0.6, 0.6),
     roughnessMap: concreteRough,
     roughness: 1.0,
-    // Low metalness — gives SSR a Fresnel bite without making the
-    // floor read as polished steel.
     metalness: 0.04,
-    // Mirror-sharp clearcoat lobe. The reference photo's defining
-    // feature is razor-clean reflections of the ceiling lights —
-    // clearcoatRoughness of 0.02 puts the highlight inside ~1px on
-    // the screen at this camera distance.
-    clearcoat: 1.0,
-    clearcoatRoughness: 0.02,
+    // Vertex displacement — recessed pits/cracks/chunks-missing in the
+    // dark areas of the heightmap. Bias = -scale puts the bright matrix
+    // at zero displacement (surface level) and the darkest defects at
+    // -scale (deepest). 0.06 unit = ~10% of a Tetris cell, visible
+    // at close range without breaking the silhouette.
+    displacementMap: concreteDisp,
+    displacementScale: 0.06,
+    displacementBias: -0.06,
+    // Clearcoat still on (polished sealed look) but rougher than the
+    // pristine reference — the marring under the clearcoat scatters
+    // the highlight a bit, so a clean 0.02 lobe would look fake.
+    clearcoat: 0.85,
+    clearcoatRoughness: 0.04,
     envMapIntensity: 1.0,
   });
 
-  // Smaller floor plane (40×40) since the concrete texture doesn't tile —
-  // beyond that, fog absorbs the edge. Avoids stretching the single 2048²
-  // image across a huge plane and losing texel density.
-  const floor = new THREE.Mesh(new THREE.PlaneGeometry(40, 40), floorMat);
+  // Subdivided floor — 192×192 segments (74k tris) so displacementMap has
+  // vertices to push around for the missing-chunk depth. Lower than this
+  // and the pits stay flat-looking; higher costs more than it adds since
+  // the high-frequency pit detail is captured in the normal map anyway.
+  const floor = new THREE.Mesh(new THREE.PlaneGeometry(40, 40, 192, 192), floorMat);
   floor.rotation.x = -Math.PI / 2;
   floor.position.y = FLOOR_Y;
   floor.receiveShadow = true;

@@ -232,6 +232,36 @@ export function makeMarbleNormalFromColor(colorTex, strength = 1.2) {
   return tex;
 }
 
+// Heightmap from color luminance — fed into MeshPhysicalMaterial's
+// displacementMap so dark areas (pits, cracks, missing chunks) physically
+// recess into the geometry. Contrast curve (pow > 1) deepens the darks
+// so the marring reads geometrically, not just as paint.
+export function makeDisplacementFromColor(colorTex, contrast = 1.6) {
+  const src = colorTex.userData.canvas;
+  const w = src.width, h = src.height;
+  const sctx = src.getContext('2d');
+  const data = sctx.getImageData(0, 0, w, h).data;
+
+  const out = document.createElement('canvas');
+  out.width = w; out.height = h;
+  const octx = out.getContext('2d');
+  const img = octx.createImageData(w, h);
+
+  for (let i = 0; i < w * h; i++) {
+    const o = i * 4;
+    const lum = (0.299 * data[o] + 0.587 * data[o + 1] + 0.114 * data[o + 2]) / 255;
+    const v = Math.max(0, Math.min(1, Math.pow(lum, contrast)));
+    const px = (v * 255) | 0;
+    img.data[o] = img.data[o + 1] = img.data[o + 2] = px;
+    img.data[o + 3] = 255;
+  }
+  octx.putImageData(img, 0, 0);
+
+  const tex = new THREE.CanvasTexture(out);
+  tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
+  return tex;
+}
+
 // ---- Poured concrete (floor) -------------------------------------------
 
 // Procedural concrete map for a fancy-garage epoxy floor. Single non-tiling
@@ -316,8 +346,86 @@ export function makeConcreteColorTexture(size = 2048) {
     }
     ctx.stroke();
   }
-  // (Stain blobs removed — a polished/cured warehouse floor doesn't read
-  // with oil patches the way a garage with cars would.)
+
+  // ---- Crackle network — the reference's defining feature -------------
+  // Random nodes connected to nearest neighbours forms a dried-mud /
+  // surface-weathering crackle pattern. Same dark warm color so it reads
+  // through any clearcoat as discoloration baked into the concrete.
+  const crackleNodes = [];
+  const nodeCount = 90;
+  for (let i = 0; i < nodeCount; i++) {
+    crackleNodes.push({ x: Math.random() * size, y: Math.random() * size });
+  }
+  ctx.strokeStyle = 'rgba(48, 40, 30, 0.55)';
+  ctx.lineWidth = 0.8;
+  for (const node of crackleNodes) {
+    // Connect each node to its 2-3 nearest neighbors
+    const dists = crackleNodes
+      .map(n => ({ n, d: Math.hypot(n.x - node.x, n.y - node.y) }))
+      .sort((a, b) => a.d - b.d);
+    const connections = 2 + Math.floor(Math.random() * 2);
+    for (let i = 1; i <= connections && i < dists.length; i++) {
+      ctx.beginPath();
+      // Slight wobble so cracks aren't perfectly straight
+      const target = dists[i].n;
+      const midX = (node.x + target.x) / 2 + (Math.random() - 0.5) * 8;
+      const midY = (node.y + target.y) / 2 + (Math.random() - 0.5) * 8;
+      ctx.moveTo(node.x, node.y);
+      ctx.quadraticCurveTo(midX, midY, target.x, target.y);
+      ctx.stroke();
+    }
+  }
+
+  // ---- Pits ------------------------------------------------------------
+  // Small irregular dark blobs scattered throughout — surface erosion
+  // and impact divots. Darker than the matrix.
+  for (let i = 0; i < 380; i++) {
+    const x = Math.random() * size;
+    const y = Math.random() * size;
+    const r = 2 + Math.random() * 7;
+    // Slightly irregular outline (not perfect circle) by drawing several
+    // overlapping smaller blobs
+    const blobCount = 3 + Math.floor(Math.random() * 4);
+    for (let b = 0; b < blobCount; b++) {
+      const ox = x + (Math.random() - 0.5) * r;
+      const oy = y + (Math.random() - 0.5) * r;
+      const br = r * (0.4 + Math.random() * 0.5);
+      ctx.fillStyle = `rgba(38, 32, 24, ${0.45 + Math.random() * 0.35})`;
+      ctx.beginPath();
+      ctx.arc(ox, oy, br, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  // ---- Missing chunks --------------------------------------------------
+  // Bigger irregular dark patches — places where material has worn or
+  // chipped away. Vertex displacement will recess these into the geometry.
+  for (let i = 0; i < 45; i++) {
+    const cx = Math.random() * size;
+    const cy = Math.random() * size;
+    const baseR = 8 + Math.random() * 28;
+    // Irregular polygon outline
+    const points = 8 + Math.floor(Math.random() * 6);
+    const verts = [];
+    for (let p = 0; p < points; p++) {
+      const a = (p / points) * Math.PI * 2;
+      const r = baseR * (0.5 + Math.random() * 0.7);
+      verts.push([cx + Math.cos(a) * r, cy + Math.sin(a) * r]);
+    }
+    // Soft dark gradient fill (darker at center, fades at edge)
+    const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, baseR);
+    g.addColorStop(0, 'rgba(28, 24, 18, 0.72)');
+    g.addColorStop(0.6, 'rgba(40, 34, 26, 0.50)');
+    g.addColorStop(1, 'rgba(60, 50, 38, 0)');
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    for (let p = 0; p < verts.length; p++) {
+      if (p === 0) ctx.moveTo(verts[p][0], verts[p][1]);
+      else ctx.lineTo(verts[p][0], verts[p][1]);
+    }
+    ctx.closePath();
+    ctx.fill();
+  }
 
   // Control joints (saw cuts) — clean horizontal lines, lighter than before
   // since polished cured concrete grout reads warm-tan not black.
