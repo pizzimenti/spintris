@@ -150,12 +150,14 @@ export function buildScene({ anisotropy = 1 } = {}) {
     // Broader clearcoat lobe so the highlight covers multiple pixels.
     clearcoat: 1.0,
     clearcoatRoughness: 0.16,
-    // Light SSS-fake: subtle edge bleed without drowning the surface detail.
-    transmission: 0.05,
-    thickness: 0.35,
-    ior: 1.5,
-    attenuationColor: new THREE.Color(0xc88a82),
-    attenuationDistance: 1.2,
+    // Transmission disabled: triggers a per-frame framebuffer-copy pass in
+    // three.js for refraction, which is a Dawn slow path on this adapter.
+    // Re-enable per-mesh if WebGPU perf improves on a future driver.
+    // transmission: 0.05,
+    // thickness: 0.35,
+    // ior: 1.5,
+    // attenuationColor: new THREE.Color(0xc88a82),
+    // attenuationDistance: 1.2,
     emissive: 0x3a1612,
     emissiveIntensity: 0.06,
     envMapIntensity: 0.7,
@@ -171,11 +173,7 @@ export function buildScene({ anisotropy = 1 } = {}) {
     metalness: 0.0,
     clearcoat: 1.0,
     clearcoatRoughness: 0.18,
-    transmission: 0.04,
-    thickness: 0.3,
-    ior: 1.5,
-    attenuationColor: new THREE.Color(0xc88a82),
-    attenuationDistance: 1.0,
+    // (transmission stripped — see columnMat note)
     emissive: 0x3a1612,
     emissiveIntensity: 0.05,
     envMapIntensity: 0.7,

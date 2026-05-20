@@ -24,10 +24,11 @@ log.info('boot · UA: ' + navigator.userAgent);
 const renderer = new THREE.WebGPURenderer({
   canvas,
   antialias: true,
-  // 8× MSAA when supported (Radeon 760M advertises maxSamples=8 on this
-  // driver). The renderer / backend will clamp down if the platform can't
-  // service it; reportRenderer() logs the effective sample count.
-  samples: 8,
+  // 4× MSAA. The WebGL2 backend advertised maxSamples=8 but on the WebGPU
+  // backend asking for 8 dropped framerate to ~0.1 fps on this adapter
+  // (Dawn appears to fall off a fast path). 4× is the WebGPU spec-required
+  // minimum and well supported.
+  samples: 4,
   powerPreference: 'high-performance',
   // Higher precision GLSL when WebGL2 fallback kicks in; on most desktop
   // drivers this is already the default but mobile / integrated GPUs vary.
@@ -54,18 +55,28 @@ backendEl.textContent = renderer.backend?.isWebGPUBackend ? 'WEBGPU' : 'WEBGL2';
 
 reportRenderer(renderer);
 
-// renderer.capabilities.getMaxAnisotropy() returns 1 under WebGPURenderer's
-// WebGL2 fallback even when EXT_texture_filter_anisotropic advertises 16
-// (issue: capabilities proxy isn't propagating the extension). Query the
-// GL context directly so anisotropic filtering actually engages.
+// renderer.capabilities.getMaxAnisotropy() returns 1 under both the WebGPU
+// backend and the WebGL2 fallback on this driver (capabilities proxy doesn't
+// propagate the underlying limit). Override:
+//   - WebGL2 path: query EXT_texture_filter_anisotropic directly.
+//   - WebGPU path: pin to 16 (the WebGPU spec maximum for samplers).
 function detectMaxAnisotropy() {
   const reported = renderer.capabilities?.getMaxAnisotropy?.() ?? 1;
-  const gl = renderer.getContext?.();
-  const ext = gl?.getExtension?.('EXT_texture_filter_anisotropic');
-  const direct = ext ? gl.getParameter(ext.MAX_TEXTURE_MAX_ANISOTROPY_EXT) : 1;
-  if (direct > reported) {
-    log.warn(`capabilities reported anisotropy ${reported} but EXT reports ${direct} — using ${direct}`);
-    return direct;
+  const ctx = renderer.getContext?.();
+  // WebGL2: query the EXT
+  if (ctx && typeof ctx.getParameter === 'function') {
+    const ext = ctx.getExtension('EXT_texture_filter_anisotropic');
+    const direct = ext ? ctx.getParameter(ext.MAX_TEXTURE_MAX_ANISOTROPY_EXT) : 1;
+    if (direct > reported) {
+      log.warn(`capabilities reported anisotropy ${reported} but GL EXT reports ${direct} — using ${direct}`);
+      return direct;
+    }
+    return reported;
+  }
+  // WebGPU: spec-mandated max is 16 for any conformant adapter.
+  if (renderer.backend?.isWebGPUBackend) {
+    log.warn(`capabilities reported anisotropy ${reported} — pinning to 16 (WebGPU spec maximum)`);
+    return 16;
   }
   return reported;
 }
@@ -111,9 +122,12 @@ const shake = new CameraShake();
 //   ?ssgi=0  ?ssr=0  ?gtao=0  ?traa=0  ?bloom=0
 // Default: SSGI off (it tanks frame rate to <1fps on this WebGL2 backend);
 // AO + SSR + bloom + TRAA on.
+// SSGI defaults on when the WebGPU backend is active — on WebGL2 fallback
+// it tanks frame rate to <1 fps. Override either way via ?ssgi=1 / ?ssgi=0.
+const onWebGPU = !!renderer.backend?.isWebGPUBackend;
 const passes = {
   gtao: getFlag('gtao', true),
-  ssgi: getFlag('ssgi', false),  // off by default — too expensive here
+  ssgi: getFlag('ssgi', onWebGPU),
   ssr:  getFlag('ssr',  true),
   bloom: getFlag('bloom', true),
   traa: getFlag('traa', true),

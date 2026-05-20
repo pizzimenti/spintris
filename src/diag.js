@@ -66,7 +66,12 @@ export function reportRenderer(renderer) {
     msaaSamples: renderer.samples ?? renderer._samples ?? 'unknown',
   };
 
-  if (gl) {
+  // Under WebGPU, getContext() returns a GPUDevice / WebGPU context (no
+  // getParameter, no extensions API). Only walk the WebGL surface if we're
+  // actually on a WebGL context.
+  const isWebGLContext = gl && typeof gl.getParameter === 'function';
+
+  if (isWebGLContext) {
     info.gl = {
       vendor: gl.getParameter(gl.VENDOR),
       renderer: gl.getParameter(gl.RENDERER),
@@ -95,6 +100,22 @@ export function reportRenderer(renderer) {
       : 'no ext';
 
     info.gl.extensions = gl.getSupportedExtensions();
+  } else if (backend === 'WEBGPU') {
+    // WebGPU exposes adapter/device info async via navigator.gpu; report
+    // what we can synchronously and queue an async dump for the rest.
+    const wgpu = renderer.backend;
+    info.webgpu = {
+      hasAdapter: !!wgpu?.adapter,
+      hasDevice: !!wgpu?.device,
+      features: wgpu?.device?.features ? [...wgpu.device.features] : null,
+      limits: wgpu?.device?.limits ? wgpu.device.limits : null,
+    };
+    // Async adapter info (vendor / architecture / device / description)
+    navigator.gpu?.requestAdapter?.().then(a => {
+      log.group('webgpu adapter info', () => {
+        console.log({ info: a?.info, features: a?.features ? [...a.features] : null });
+      });
+    }).catch(() => {});
   }
 
   log.group(`renderer · ${backend} · ${info.gl?.unmaskedRenderer ?? '?'}`, () => {
@@ -118,6 +139,15 @@ export function reportRenderer(renderer) {
         maxDrawBuffers: info.gl.maxDrawBuffers,
       }]);
       log.info('WebGL extensions:', info.gl.extensions);
+    }
+    if (info.webgpu) {
+      console.table([{
+        hasAdapter: info.webgpu.hasAdapter,
+        hasDevice: info.webgpu.hasDevice,
+        featureCount: info.webgpu.features?.length ?? 0,
+      }]);
+      log.info('WebGPU features:', info.webgpu.features);
+      log.info('WebGPU limits:', info.webgpu.limits);
     }
   });
 
