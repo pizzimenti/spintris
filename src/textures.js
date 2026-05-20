@@ -1,5 +1,52 @@
 import * as THREE from 'three';
 
+// Equirectangular environment map painted to look like a warehouse ceiling:
+// dim warm walls, a row of bright fluorescent strips overhead, dark below.
+// Fed through PMREMGenerator → scene.environment so the polished concrete
+// floor and other PBR surfaces always have a credible reflection target
+// regardless of whether the ceiling geometry is in the camera frustum.
+export function makeWarehouseEnvironment(width = 2048, height = 1024) {
+  const c = document.createElement('canvas');
+  c.width = width;
+  c.height = height;
+  const ctx = c.getContext('2d');
+
+  // Vertical gradient: dark at the poles, warm dim in the middle band
+  const bg = ctx.createLinearGradient(0, 0, 0, height);
+  bg.addColorStop(0,    '#1a1816');  // top pole — dark ceiling void
+  bg.addColorStop(0.35, '#403830');  // upper hemisphere — warm dim
+  bg.addColorStop(0.55, '#322b24');  // horizon-ish — slightly dimmer
+  bg.addColorStop(0.85, '#1a1614');  // lower hemisphere — darker
+  bg.addColorStop(1,    '#080706');  // bottom pole — floor shadow
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, width, height);
+
+  // Bright fluorescent strips — horizontal bands in the upper portion.
+  // Multiple bands at slightly different heights for the row-of-fixtures
+  // look that defines the reference image.
+  const stripCount = 4;
+  for (let i = 0; i < stripCount; i++) {
+    const yCenter = height * (0.18 + i * 0.05);
+    const halfH = height * 0.014;
+    const g = ctx.createLinearGradient(0, yCenter - halfH * 1.8, 0, yCenter + halfH * 1.8);
+    g.addColorStop(0,   'rgba(255, 248, 230, 0)');
+    g.addColorStop(0.5, 'rgba(255, 252, 240, 1)');
+    g.addColorStop(1,   'rgba(255, 248, 230, 0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, yCenter - halfH * 1.8, width, halfH * 3.6);
+  }
+
+  // Slight warm glow around the bright strips for soft halo
+  const halo = ctx.createLinearGradient(0, height * 0.12, 0, height * 0.42);
+  halo.addColorStop(0,   'rgba(255, 230, 200, 0)');
+  halo.addColorStop(0.5, 'rgba(255, 230, 200, 0.10)');
+  halo.addColorStop(1,   'rgba(255, 230, 200, 0)');
+  ctx.fillStyle = halo;
+  ctx.fillRect(0, height * 0.12, width, height * 0.30);
+
+  return c;
+}
+
 // Draw grout / seam bands with soft (anti-aliased) edges. `core` is the
 // fully-opaque interior width in px; `falloff` is the half-transparent
 // fade band on each side. Banks anti-aliasing into the texture so the
@@ -202,66 +249,63 @@ export function makeConcreteColorTexture(size = 2048) {
   c.width = c.height = size;
   const ctx = c.getContext('2d');
 
-  // Base — neutral gray with a slow radial gradient to break up flatness
+  // Base — warm cream/tan polished concrete (Costco-floor reference).
+  // Slow gradient breaks up flatness without showing as a hot spot.
   const base = ctx.createRadialGradient(
-    size * 0.3, size * 0.4, size * 0.05,
-    size * 0.55, size * 0.55, size * 0.75,
+    size * 0.35, size * 0.45, size * 0.05,
+    size * 0.55, size * 0.55, size * 0.78,
   );
-  base.addColorStop(0, '#6c6f73');
-  base.addColorStop(0.5, '#5d6064');
-  base.addColorStop(1, '#52555a');
+  base.addColorStop(0, '#b4a890');
+  base.addColorStop(0.5, '#a89c84');
+  base.addColorStop(1, '#988c76');
   ctx.fillStyle = base;
   ctx.fillRect(0, 0, size, size);
 
-  // Warm + cool color patches — natural pour variation
-  for (let i = 0; i < 32; i++) {
+  // Warm patches only — real cured concrete varies in cream/tan, no cool
+  // splotches. Subtler than before.
+  for (let i = 0; i < 24; i++) {
     const x = Math.random() * size;
     const y = Math.random() * size;
-    const r = 180 + Math.random() * 460;
-    const warm = Math.random() < 0.5;
-    const hue = warm ? 25 + Math.random() * 25 : 200 + Math.random() * 20;
-    const sat = 4 + Math.random() * 8;
-    const light = 28 + Math.random() * 15;
-    ctx.fillStyle = `hsla(${hue}, ${sat}%, ${light}%, ${0.06 + Math.random() * 0.08})`;
+    const r = 200 + Math.random() * 480;
+    const hue = 28 + Math.random() * 18;       // narrow warm range
+    const sat = 8 + Math.random() * 10;
+    const light = 48 + Math.random() * 15;
+    ctx.fillStyle = `hsla(${hue}, ${sat}%, ${light}%, ${0.05 + Math.random() * 0.07})`;
     ctx.beginPath();
     ctx.arc(x, y, r, 0, Math.PI * 2);
     ctx.fill();
   }
 
-  // Fine aggregate — dense pepper of small flecks
-  for (let i = 0; i < 9000; i++) {
-    const lum = 70 + Math.random() * 70;
-    ctx.fillStyle = `rgba(${lum}, ${lum * 0.99 | 0}, ${lum * 0.97 | 0}, ${0.05 + Math.random() * 0.15})`;
+  // Fine aggregate — dense, warm tan/cream flecks with a few darker grains
+  for (let i = 0; i < 11000; i++) {
+    const warm = Math.random() < 0.75;
+    const lum = warm ? 180 + Math.random() * 55 : 90 + Math.random() * 40;
+    const r = lum, g = (lum * 0.96) | 0, b = (lum * 0.88) | 0;
+    ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${0.10 + Math.random() * 0.18})`;
     ctx.beginPath();
-    ctx.arc(Math.random() * size, Math.random() * size, 0.5 + Math.random() * 1.8, 0, Math.PI * 2);
+    ctx.arc(Math.random() * size, Math.random() * size, 0.4 + Math.random() * 1.6, 0, Math.PI * 2);
     ctx.fill();
   }
 
-  // Larger pebbles
-  for (let i = 0; i < 240; i++) {
-    const lum = 50 + Math.random() * 90;
-    ctx.fillStyle = `rgba(${lum}, ${lum}, ${lum * 0.95 | 0}, ${0.18 + Math.random() * 0.22})`;
+  // Larger pebbles — small tan/dark inclusions
+  for (let i = 0; i < 320; i++) {
+    const warm = Math.random() < 0.6;
+    const lum = warm ? 165 + Math.random() * 60 : 80 + Math.random() * 50;
+    const r = lum, g = (lum * 0.95) | 0, b = (lum * 0.86) | 0;
+    ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${0.22 + Math.random() * 0.24})`;
     ctx.beginPath();
-    ctx.arc(Math.random() * size, Math.random() * size, 2 + Math.random() * 5.5, 0, Math.PI * 2);
+    ctx.arc(Math.random() * size, Math.random() * size, 1.5 + Math.random() * 4.5, 0, Math.PI * 2);
     ctx.fill();
   }
 
-  // Pits & pock marks
-  for (let i = 0; i < 450; i++) {
-    ctx.fillStyle = `rgba(18, 18, 22, ${0.35 + Math.random() * 0.5})`;
-    ctx.beginPath();
-    ctx.arc(Math.random() * size, Math.random() * size, 0.5 + Math.random() * 1.6, 0, Math.PI * 2);
-    ctx.fill();
-  }
-
-  // Hairline cracks — multi-segment quadratic beziers
-  for (let i = 0; i < 18; i++) {
-    ctx.strokeStyle = `rgba(16, 18, 22, ${0.35 + Math.random() * 0.45})`;
-    ctx.lineWidth = 0.4 + Math.random() * 0.9;
+  // Hairline cracks — sparse, very subtle, warm-dark color
+  for (let i = 0; i < 10; i++) {
+    ctx.strokeStyle = `rgba(80, 70, 55, ${0.20 + Math.random() * 0.25})`;
+    ctx.lineWidth = 0.4 + Math.random() * 0.8;
     let x = Math.random() * size, y = Math.random() * size;
     ctx.beginPath();
     ctx.moveTo(x, y);
-    const segments = 5 + Math.floor(Math.random() * 9);
+    const segments = 5 + Math.floor(Math.random() * 7);
     for (let s = 0; s < segments; s++) {
       const dx = (Math.random() - 0.5) * 220;
       const dy = (Math.random() - 0.5) * 220;
@@ -272,45 +316,31 @@ export function makeConcreteColorTexture(size = 2048) {
     }
     ctx.stroke();
   }
+  // (Stain blobs removed — a polished/cured warehouse floor doesn't read
+  // with oil patches the way a garage with cars would.)
 
-  // Stain / oil blobs — soft radial fades
-  for (let i = 0; i < 9; i++) {
-    const x = Math.random() * size;
-    const y = Math.random() * size;
-    const r = 50 + Math.random() * 220;
-    const oil = Math.random() < 0.45;
-    const lum = oil ? 22 : 90;
-    const alpha = 0.05 + Math.random() * 0.12;
-    const g = ctx.createRadialGradient(x, y, 0, x, y, r);
-    g.addColorStop(0, `rgba(${lum}, ${lum}, ${lum * 0.92 | 0}, ${alpha})`);
-    g.addColorStop(0.6, `rgba(${lum}, ${lum}, ${lum * 0.92 | 0}, ${alpha * 0.4})`);
-    g.addColorStop(1, 'rgba(0, 0, 0, 0)');
-    ctx.fillStyle = g;
-    ctx.fillRect(x - r, y - r, r * 2, r * 2);
-  }
-
-  // Control joints (saw cuts) — straight thin dark lines every quarter-floor
-  // with soft shadow rolloff so they read as recessed grooves under epoxy.
+  // Control joints (saw cuts) — clean horizontal lines, lighter than before
+  // since polished cured concrete grout reads warm-tan not black.
   const grid = size / 4;
   for (let i = 1; i < 4; i++) {
     const p = i * grid;
     // Cut itself
-    ctx.fillStyle = '#13151a';
-    ctx.fillRect(p - 1.5, 0, 3, size);
-    ctx.fillRect(0, p - 1.5, size, 3);
-    // Soft shadow band
-    const gv = ctx.createLinearGradient(p - 10, 0, p + 10, 0);
+    ctx.fillStyle = '#3c352a';
+    ctx.fillRect(p - 1, 0, 2, size);
+    ctx.fillRect(0, p - 1, size, 2);
+    // Soft shadow band — much subtler
+    const gv = ctx.createLinearGradient(p - 6, 0, p + 6, 0);
     gv.addColorStop(0, 'rgba(0, 0, 0, 0)');
-    gv.addColorStop(0.5, 'rgba(0, 0, 0, 0.16)');
+    gv.addColorStop(0.5, 'rgba(0, 0, 0, 0.08)');
     gv.addColorStop(1, 'rgba(0, 0, 0, 0)');
     ctx.fillStyle = gv;
-    ctx.fillRect(p - 10, 0, 20, size);
-    const gh = ctx.createLinearGradient(0, p - 10, 0, p + 10);
+    ctx.fillRect(p - 6, 0, 12, size);
+    const gh = ctx.createLinearGradient(0, p - 6, 0, p + 6);
     gh.addColorStop(0, 'rgba(0, 0, 0, 0)');
-    gh.addColorStop(0.5, 'rgba(0, 0, 0, 0.16)');
+    gh.addColorStop(0.5, 'rgba(0, 0, 0, 0.08)');
     gh.addColorStop(1, 'rgba(0, 0, 0, 0)');
     ctx.fillStyle = gh;
-    ctx.fillRect(0, p - 10, size, 20);
+    ctx.fillRect(0, p - 6, size, 12);
   }
 
   const tex = new THREE.CanvasTexture(c);

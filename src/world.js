@@ -61,7 +61,37 @@ export function buildScene({ anisotropy = 1, shadowMapSize = 4096 } = {}) {
   accent.position.set(0, 0, 4);
   scene.add(accent);
 
-  // ---- Floor: tiled marble with grout, env-mapped reflections ------------
+  // ---- Overhead light fixtures ------------------------------------------
+  //
+  // Two complementary mechanisms for the warehouse-ceiling-reflection
+  // look from the reference photo:
+  //
+  //   (a) The custom warehouse env map (scene.environment) bakes bright
+  //       horizontal bands at ceiling elevation — every PBR material
+  //       gets these as IBL reflections regardless of camera angle.
+  //
+  //   (b) Visible emissive light fixtures positioned at y=7.5 in a row
+  //       along the Z axis — low enough to fit inside the camera's FOV
+  //       (camera at y=4 looking at y=-1.2 sees up to roughly y=7 at
+  //       z=0), so SSR catches them and adds sharp streak reflections.
+  //
+  // Together you get always-on ambient ceiling reflection from (a) plus
+  // the dramatic streak pattern from (b) when fixtures are in frame.
+  const fixtureMat = new THREE.MeshStandardMaterial({
+    color: 0xffffff,
+    emissive: 0xfff0d6,
+    emissiveIntensity: 4.5,
+    roughness: 1.0,
+    metalness: 0.0,
+  });
+  const fixtureGeo = new THREE.BoxGeometry(5.0, 0.12, 0.55);
+  for (const z of [-22, -14, -6, 2]) {
+    const fix = new THREE.Mesh(fixtureGeo, fixtureMat);
+    fix.position.set(0, 7.5, z);
+    scene.add(fix);
+  }
+
+  // ---- Floor: polished cured concrete with mirror clearcoat -------------
 
   // Poured concrete with fancy-garage epoxy clearcoat. ONE non-tiling
   // texture covers the whole floor — every crack, pit, stain, and saw-cut
@@ -80,20 +110,21 @@ export function buildScene({ anisotropy = 1, shadowMapSize = 4096 } = {}) {
     color: 0xffffff,
     map: concreteColor,
     normalMap: concreteNormal,
-    // Concrete bumps are subtle — the epoxy seal smooths them out optically.
-    normalScale: new THREE.Vector2(0.35, 0.35),
+    // Bumps barely visible under the polish — real cured warehouse
+    // concrete reads almost mirror-flat at the macro level. Detail
+    // shows in the color map (aggregate) but not in geometry.
+    normalScale: new THREE.Vector2(0.18, 0.18),
     roughnessMap: concreteRough,
     roughness: 1.0,
-    // Slight metalness so SSR has Fresnel to bite into. Concrete is a
-    // dielectric, but the epoxy layer's IOR makes the composite read
-    // slightly reflective at all angles — 0.08 captures that without
-    // pushing it into "metal floor" territory.
-    metalness: 0.08,
-    // Full polished epoxy clearcoat — this is what defines the fancy
-    // garage look. Concrete texture shows through underneath; the
-    // clearcoat handles all the gloss.
+    // Low metalness — gives SSR a Fresnel bite without making the
+    // floor read as polished steel.
+    metalness: 0.04,
+    // Mirror-sharp clearcoat lobe. The reference photo's defining
+    // feature is razor-clean reflections of the ceiling lights —
+    // clearcoatRoughness of 0.02 puts the highlight inside ~1px on
+    // the screen at this camera distance.
     clearcoat: 1.0,
-    clearcoatRoughness: 0.045,
+    clearcoatRoughness: 0.02,
     envMapIntensity: 1.0,
   });
 

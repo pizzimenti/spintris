@@ -13,6 +13,7 @@ import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 
 import { Tetris, COLS, ROWS } from './tetris.js';
 import { buildScene, createBrick, cellPosition } from './world.js';
+import { makeWarehouseEnvironment } from './textures.js';
 import { ParticleField, CameraShake } from './effects.js';
 import { log, reportRenderer, reportScene, startFrameMonitor, isDebug } from './diag.js';
 
@@ -128,14 +129,21 @@ const anisotropy = detectMaxAnisotropy();
 log.info(`anisotropy in use: ${anisotropy}`);
 const { scene, archGroup, piecesGroup } = buildScene({ anisotropy, shadowMapSize: quality.shadowMapSize });
 
-// Procedural studio environment → PMREM cubemap → IBL for every PBR material.
-// Cheap, no HDR file download, and gives every clearcoat surface something to
-// reflect (so the marble actually reads as polished).
+// Warehouse-style environment map → PMREM cubemap → IBL for every PBR
+// material. Painted canvas equirectangular: dim warm ceiling with bright
+// fluorescent strips overhead. The polished concrete floor's clearcoat
+// picks these up as crisp specular highlights — the defining visual of
+// the reference photo. RoomEnvironment is the fallback used for surfaces
+// when the warehouse env's bright strips would be too harsh.
 const pmrem = new THREE.PMREMGenerator(renderer);
-// sigma=0.04 — max effective before three.js logs "too large and will clip".
-const envTex = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+const warehouseCanvas = makeWarehouseEnvironment();
+const warehouseTex = new THREE.CanvasTexture(warehouseCanvas);
+warehouseTex.mapping = THREE.EquirectangularReflectionMapping;
+warehouseTex.colorSpace = THREE.SRGBColorSpace;
+const envTex = pmrem.fromEquirectangular(warehouseTex).texture;
+warehouseTex.dispose();
 scene.environment = envTex;
-scene.environmentIntensity = 0.4;
+scene.environmentIntensity = 0.95;
 
 const camera = new THREE.PerspectiveCamera(56, 1, 0.1, 100);
 
