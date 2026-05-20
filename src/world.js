@@ -73,7 +73,11 @@ export function buildScene({ anisotropy = 1 } = {}) {
     normalScale: new THREE.Vector2(0.65, 0.65),
     roughnessMap: tileRough,
     roughness: 1.0,
-    metalness: 0.0,
+    // Slight metalness boost so SSR has something to lock onto — pure
+    // dielectric (0.0) is technically correct for marble but SSR's Fresnel
+    // pickup is too subtle on this surface without it. 0.08 still reads
+    // as polished stone, not as a metal floor.
+    metalness: 0.08,
     clearcoat: 0.9,
     clearcoatRoughness: 0.16,
     envMapIntensity: 1.0,
