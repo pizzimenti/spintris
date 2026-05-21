@@ -129,7 +129,10 @@ export function buildScene({ anisotropy = 1, shadowMapSize = 4096 } = {}) {
   // luminance-derived so the dark pits/chunks/cracks in the color map
   // physically recess into the geometry on the subdivided floor mesh.
   const concreteColor = makeConcreteColorTexture(2048);
-  const concreteNormal = makeMarbleNormalFromColor(concreteColor, 1.4);
+  // Concrete is ClampToEdge-wrapped (non-tiling), so pass seamless=false
+  // to the normal sampler — otherwise border pixels read across to the
+  // far edge and produce visible normal artifacts at the texture borders.
+  const concreteNormal = makeMarbleNormalFromColor(concreteColor, 1.4, false);
   const concreteRough = makeMarbleRoughnessFromColor(concreteColor);
   const concreteDisp = makeDisplacementFromColor(concreteColor, 1.8);
   for (const t of [concreteColor, concreteNormal, concreteRough, concreteDisp]) {
@@ -352,8 +355,18 @@ export function buildScene({ anisotropy = 1, shadowMapSize = 4096 } = {}) {
   //
   // GRID_R defines the bar radius (visible thickness). LANDING_R is the
   // beefier bottom indicator that shows hard-drop landing position.
-  const GRID_R = 0.025;
-  const LANDING_R = 0.05;
+  //
+  // Bar radius must stay strictly less than the brick gutter, otherwise
+  // the cylinder clips into adjacent bricks. Brick footprint is
+  // CELL × 0.92, so the gutter per side is (CELL - CELL*0.92) / 2 = CELL*0.04.
+  // Use 0.85 × that as the radius to leave a hairline of breathing room.
+  const BRICK_GUTTER = CELL * 0.04;          // 0.022 for CELL=0.55
+  const GRID_R = BRICK_GUTTER * 0.85;        // ~0.0187, well inside the gutter
+  // Landing bar is allowed to be thicker than the gutter — it sits at the
+  // bottom edge of the field where there's no neighbour to clip into, and
+  // it's offset down by its own radius so the bar's TOP sits flush with
+  // the field boundary instead of crossing into the lowest row.
+  const LANDING_R = 0.045;
 
   const gridMat = new THREE.MeshPhysicalMaterial({
     color: 0xc8d6f0,
@@ -418,10 +431,12 @@ export function buildScene({ anisotropy = 1, shadowMapSize = 4096 } = {}) {
       GRID_R, gridMat,
     ));
   }
-  // Landing line — thicker, brighter, signals hard-drop landing position
+  // Landing line — thicker, brighter, signals hard-drop landing position.
+  // Offset down by its own radius so the bar's top sits flush with the
+  // field boundary instead of poking into the lowest row.
   fieldGroup.add(makeBar(
-    new THREE.Vector3(-FIELD_W / 2 - 0.05, -FIELD_H / 2, 0),
-    new THREE.Vector3(FIELD_W / 2 + 0.05, -FIELD_H / 2, 0),
+    new THREE.Vector3(-FIELD_W / 2 - 0.05, -FIELD_H / 2 - LANDING_R, 0),
+    new THREE.Vector3(FIELD_W / 2 + 0.05, -FIELD_H / 2 - LANDING_R, 0),
     LANDING_R, landingMat,
   ));
   archGroup.add(fieldGroup);

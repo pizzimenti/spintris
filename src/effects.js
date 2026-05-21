@@ -62,6 +62,16 @@ export class ParticleField {
       }
     }
   }
+
+  // Yank all live particles back to the pool — used on game-restart so
+  // a fresh game doesn't start with a previous run's burst still in flight.
+  clear() {
+    for (const m of this.live) {
+      this.scene.remove(m);
+      this.pool.push(m);
+    }
+    this.live.length = 0;
+  }
 }
 
 // Camera-shake utility — call kick() on impact, then apply() per frame AFTER
@@ -80,4 +90,7 @@ export class CameraShake {
     camera.position.z += (Math.random() - 0.5) * s * 0.3;
     this.trauma = Math.max(0, this.trauma - dt * 1.6);
   }
+
+  // Zero trauma so a fresh game starts with no inherited shake.
+  reset() { this.trauma = 0; }
 }

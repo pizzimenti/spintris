@@ -29,11 +29,15 @@ log.info('boot · UA: ' + navigator.userAgent);
 // overrides. Each preset chooses what's expensive to enable, since several
 // of these levers (forceWebGL, samples, shadowMapSize) can only be set at
 // renderer construction time — changing them mid-session requires a reload.
+// MSAA samples MUST be 1 (off) whenever TRAA is enabled — per the TRAANode
+// docs, "MSAA must be disabled when TRAA is in use" (it confuses TRAA's
+// temporal reprojection and breaks the AA pass). Only the low preset, which
+// uses no temporal AA, can ask for MSAA.
 const QUALITY_PRESETS = {
   low: {
     label: 'low',
     forceWebGL: true,        // skip WebGPU even when available; fewer surprises
-    samples: 1,              // no MSAA
+    samples: 1,              // no MSAA (no temporal AA either; just FXAA-free)
     antialias: false,
     pixelRatioCap: 1,
     shadowMapSize: 1024,
@@ -43,8 +47,8 @@ const QUALITY_PRESETS = {
   medium: {
     label: 'medium',
     forceWebGL: false,
-    samples: 4,
-    antialias: true,
+    samples: 1,              // TRAA on → MSAA off
+    antialias: false,
     pixelRatioCap: 1.5,
     shadowMapSize: 2048,
     shadowType: 'PCFSoft',
@@ -53,11 +57,15 @@ const QUALITY_PRESETS = {
   high: {
     label: 'high',
     forceWebGL: false,
-    samples: 4,
-    antialias: true,
+    samples: 1,              // TRAA on → MSAA off
+    antialias: false,
     pixelRatioCap: 2,
     shadowMapSize: 4096,
     shadowType: 'PCFSoft',
+    // SSGI is the heavy hitter — on the WebGL2 fallback path it can drop
+    // frame rate to <1 fps. Backend-gated below in the pass-resolution
+    // step so first-run users on browsers without WebGPU don't land in
+    // an unplayable configuration.
     passes: { gtao: true,  ssgi: true,  ssr: true,  bloom: true,  traa: true,  denoise: true },
   },
 };
@@ -177,14 +185,24 @@ const shake = new CameraShake();
 // Pass enablement starts from the quality preset and is overridable per-pass
 // via URL query (?ssgi=0, ?gtao=1, etc.) for ad-hoc testing without
 // recompiling.
+//
+// SSGI on the WebGL2 fallback path drops frame rate to <1 fps on this class
+// of integrated GPU, so we force it off when the WebGPU backend isn't active
+// — otherwise first-run users on browsers without WebGPU and on the High
+// preset land in an effectively unplayable configuration. URL ?ssgi=1 still
+// overrides if someone explicitly wants to try it.
+const onWebGPU = !!renderer.backend?.isWebGPUBackend;
 const passes = {
   gtao:    getFlag('gtao',    quality.passes.gtao),
-  ssgi:    getFlag('ssgi',    quality.passes.ssgi),
+  ssgi:    getFlag('ssgi',    quality.passes.ssgi && onWebGPU),
   ssr:     getFlag('ssr',     quality.passes.ssr),
   bloom:   getFlag('bloom',   quality.passes.bloom),
   traa:    getFlag('traa',    quality.passes.traa),
   denoise: getFlag('denoise', quality.passes.denoise),
 };
+if (quality.passes.ssgi && !onWebGPU) {
+  log.warn('quality wants SSGI but backend is WebGL2 — SSGI disabled to keep playable fps; use ?ssgi=1 to force');
+}
 function getFlag(name, dflt) {
   const v = new URLSearchParams(location.search).get(name);
   if (v === null) return dflt;
@@ -406,6 +424,8 @@ window.addEventListener('keydown', (e) => {
   if (game.gameOver) {
     if (e.code === 'KeyR') {
       game.reset();
+      particles.clear();    // drop in-flight bursts from the previous run
+      shake.reset();        // zero out any decaying camera trauma
       hideOverlay();
       paused = false;
       orbitAngle = 0;

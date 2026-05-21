@@ -30,23 +30,27 @@ export const log = {
 };
 
 // Capture every THREE warning/error so they appear under the spintris label
-// alongside our own messages — easier to scan than mixed-source console output.
-const origWarn = console.warn;
-const origError = console.error;
-console.warn = function (...args) {
-  if (typeof args[0] === 'string' && args[0].startsWith('THREE.')) {
-    origWarn.call(this, tag('THREE warn: ' + args[0]), styleTag, styleMsg, ...args.slice(1));
-    return;
-  }
-  return origWarn.apply(this, args);
-};
-console.error = function (...args) {
-  if (typeof args[0] === 'string' && args[0].startsWith('THREE.')) {
-    origError.call(this, tag('THREE error: ' + args[0]), styleTag, styleMsg, ...args.slice(1));
-    return;
-  }
-  return origError.apply(this, args);
-};
+// alongside our own messages — easier to scan than mixed-source console
+// output. Gated behind debugFlag so a normal play session doesn't have its
+// global console.warn/error rewired (this module is imported unconditionally).
+if (debugFlag) {
+  const origWarn = console.warn;
+  const origError = console.error;
+  console.warn = function (...args) {
+    if (typeof args[0] === 'string' && args[0].startsWith('THREE.')) {
+      origWarn.call(this, tag('THREE warn: ' + args[0]), styleTag, styleMsg, ...args.slice(1));
+      return;
+    }
+    return origWarn.apply(this, args);
+  };
+  console.error = function (...args) {
+    if (typeof args[0] === 'string' && args[0].startsWith('THREE.')) {
+      origError.call(this, tag('THREE error: ' + args[0]), styleTag, styleMsg, ...args.slice(1));
+      return;
+    }
+    return origError.apply(this, args);
+  };
+}
 
 export function reportRenderer(renderer) {
   const backend = renderer.backend?.isWebGPUBackend ? 'WEBGPU' : 'WEBGL2';
@@ -163,13 +167,16 @@ export function reportScene(scene) {
       meshes++;
       if (o.geometry?.index) triangles += o.geometry.index.count / 3;
       else if (o.geometry?.attributes?.position) triangles += o.geometry.attributes.position.count / 3;
-      if (o.material) materials.add(o.material);
+      // o.material can be either a single material or an array (multi-material
+      // meshes). Normalise either way so the audit sees them all.
+      const mats = Array.isArray(o.material) ? o.material : (o.material ? [o.material] : []);
+      for (const m of mats) materials.add(m);
     } else if (o.isLight) {
       lights++;
     }
   });
   for (const m of materials) {
-    for (const key of ['map', 'normalMap', 'roughnessMap', 'metalnessMap', 'aoMap', 'emissiveMap']) {
+    for (const key of ['map', 'normalMap', 'roughnessMap', 'metalnessMap', 'aoMap', 'emissiveMap', 'displacementMap']) {
       if (m[key]) textures.add(m[key]);
     }
   }

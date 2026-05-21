@@ -187,7 +187,13 @@ export function makeMarbleColorTexture(size = 2048) {
 
 // Sobel-style normal derived from the color map's luminance — veins become
 // subtle bumps, which is how real marble reads under raking light.
-export function makeMarbleNormalFromColor(colorTex, strength = 1.2) {
+//
+// `seamless=true` (default) wraps neighbour reads across the texture edges so
+// the resulting normal map tiles cleanly — correct for repeating sources.
+// Pass `seamless=false` for non-tiling sources (e.g. the floor concrete
+// texture, which uses ClampToEdgeWrapping); otherwise the border texels
+// encode gradients against unrelated pixels from the far side of the image.
+export function makeMarbleNormalFromColor(colorTex, strength = 1.2, seamless = true) {
   const src = colorTex.userData.canvas;
   const w = src.width, h = src.height;
   const sctx = src.getContext('2d');
@@ -207,9 +213,10 @@ export function makeMarbleNormalFromColor(colorTex, strength = 1.2) {
 
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
-      // Wrap-around sampling so the normal tiles seamlessly.
-      const xl = (x - 1 + w) % w, xr = (x + 1) % w;
-      const yt = (y - 1 + h) % h, yb = (y + 1) % h;
+      const xl = seamless ? (x - 1 + w) % w : Math.max(0, x - 1);
+      const xr = seamless ? (x + 1) % w : Math.min(w - 1, x + 1);
+      const yt = seamless ? (y - 1 + h) % h : Math.max(0, y - 1);
+      const yb = seamless ? (y + 1) % h : Math.min(h - 1, y + 1);
       const dx = (lum[y * w + xr] - lum[y * w + xl]) * strength;
       const dy = (lum[yb * w + x] - lum[yt * w + x]) * strength;
 
@@ -563,11 +570,13 @@ export function makeTileNormalTexture(size = 1024, tilesPerSide = 4) {
   // Bevel band around each grout line: 8px wide, ramping out then back
   const bevelW = 8;
   const drawBevelV = (cx, dir) => {
-    // dir = +1 means the tile edge is to the right of cx (normal points -X near edge)
+    // dir = +1 means the tile edge is to the right of cx, so the bevel
+    // normal should point -X near the seam (R < 128). The previous
+    // formula had the sign reversed and was producing a raised ridge
+    // instead of a recessed seam.
     for (let b = 0; b < bevelW; b++) {
       const t = b / bevelW; // 0 at outermost, 1 at grout
-      // R encodes X component: 0=full -X, 255=full +X, 128=zero
-      const r = Math.round(128 + dir * (1 - t) * 100);
+      const r = Math.round(128 - dir * (1 - t) * 100);
       ctx.fillStyle = `rgb(${r}, 128, 255)`;
       const x = dir > 0 ? cx - 1 - b : cx + b;
       ctx.fillRect(x, 0, 1, size);
@@ -576,7 +585,7 @@ export function makeTileNormalTexture(size = 1024, tilesPerSide = 4) {
   const drawBevelH = (cy, dir) => {
     for (let b = 0; b < bevelW; b++) {
       const t = b / bevelW;
-      const g = Math.round(128 + dir * (1 - t) * 100);
+      const g = Math.round(128 - dir * (1 - t) * 100);
       ctx.fillStyle = `rgb(128, ${g}, 255)`;
       const y = dir > 0 ? cy - 1 - b : cy + b;
       ctx.fillRect(0, y, size, 1);
