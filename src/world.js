@@ -6,6 +6,9 @@ import {
   makeMarbleColorTexture,
   makeMarbleNormalFromColor,
   makeMarbleRoughnessFromColor,
+  makeSaltColorTexture,
+  makeSaltDisplacementTexture,
+  makeOpacityVeinMapFromColor,
 } from './textures.js';
 
 export const CELL = 0.55;
@@ -27,8 +30,17 @@ export function buildScene({
   scene.fog = new THREE.FogExp2(0x05060c, 0.026);
 
   // ---- Lighting ----------------------------------------------------------
+  //
+  // Lights that should dim together when entering salt-lamp mode are
+  // pushed onto `dimableLights`. The corner lamp shade materials are
+  // tracked separately so their emissive globes fade in lockstep with
+  // the point lights they emit (visually the same fixture).
+  const dimableLights = [];
+  const lampShadeMaterials = [];
 
-  scene.add(new THREE.HemisphereLight(0xa6b8ff, 0x2a1f10, 0.35));
+  const hemi = new THREE.HemisphereLight(0xa6b8ff, 0x2a1f10, 0.35);
+  scene.add(hemi);
+  dimableLights.push(hemi);
 
   // Key light positioned directly behind the camera's starting orbit
   // position (camera begins at (0, 4, 17)), high enough that its shadow
@@ -53,18 +65,22 @@ export function buildScene({
   key.shadow.normalBias = 0.02;
   key.shadow.radius = 4;
   scene.add(key);
+  dimableLights.push(key);
 
   const fill = new THREE.DirectionalLight(0x6080ff, 0.75);
   fill.position.set(-12, 6, -8);
   scene.add(fill);
+  dimableLights.push(fill);
 
   const rim = new THREE.DirectionalLight(0xff8866, 0.6);
   rim.position.set(0, 4, -14);
   scene.add(rim);
+  dimableLights.push(rim);
 
   const accent = new THREE.PointLight(0xffd699, 1.6, 16, 1.4);
   accent.position.set(0, 0, 4);
   scene.add(accent);
+  dimableLights.push(accent);
 
   // ---- Corner stand lamps -----------------------------------------------
   //
@@ -100,6 +116,10 @@ export function buildScene({
     metalness: 0.05,
   });
 
+  // Each lamp gets its OWN shade material instance so each one's
+  // emissiveIntensity can be dimmed independently (well — together by
+  // LightTransition.apply(); but they need separate refs since the
+  // class scales each captured material individually).
   for (const [px, pz] of lampPositions) {
     const baseY = FLOOR_Y + 0.04;
     const base = new THREE.Mesh(baseGeo, poleMat);
@@ -113,9 +133,11 @@ export function buildScene({
     pole.castShadow = true;
     scene.add(pole);
 
-    const shade = new THREE.Mesh(shadeGeo, shadeMat);
+    const myShadeMat = shadeMat.clone();
+    const shade = new THREE.Mesh(shadeGeo, myShadeMat);
     shade.position.set(px, baseY + LAMP_H + 0.05, pz);
     scene.add(shade);
+    lampShadeMaterials.push(myShadeMat);
 
     // Warm point light co-located with the shade. No castShadow on these
     // — adding cube-map shadow casts for 4 point lights would multiply
@@ -123,6 +145,7 @@ export function buildScene({
     const light = new THREE.PointLight(0xffd095, 7.5, 16, 1.5);
     light.position.set(px, baseY + LAMP_H + 0.05, pz);
     scene.add(light);
+    dimableLights.push(light);
   }
 
   // ---- Floor: polished cured concrete with mirror clearcoat -------------
@@ -242,88 +265,121 @@ export function buildScene({
   // framebuffer-copy pass for refraction. On Dawn / RADV this can be a
   // slow path; the engine HUD's FPS readout will surface any regression.
 
-  let columnMat, archMat;
-  if (columnMaterial === 'salt') {
-    const saltOpts = {
-      color: 0xffb798,
-      roughness: 0.62,
-      metalness: 0.02,
-      clearcoat: 0.0,
-      transmission: 0.55,
-      thickness: 1.2,
-      ior: 1.55,
-      attenuationColor: new THREE.Color(0xff7a44),
-      attenuationDistance: 1.6,
-      emissive: 0xff5a22,
-      emissiveIntensity: 0.55,
-      envMapIntensity: 0.55,
-    };
-    columnMat = new THREE.MeshPhysicalMaterial({
-      ...saltOpts,
-      map: colTexColor,
-      normalMap: colTexNormal,
-      normalScale: new THREE.Vector2(1.2, 1.2),
-      roughnessMap: colTexRough,
-    });
-    archMat = new THREE.MeshPhysicalMaterial({
-      ...saltOpts,
-      map: archTexColor,
-      normalMap: archTexNormal,
-      normalScale: new THREE.Vector2(1.0, 1.0),
-      roughnessMap: archTexRough,
-    });
-  } else if (columnMaterial === 'glass') {
-    const glassOpts = {
-      color: 0xffffff,
-      roughness: 0.04,
-      metalness: 0.0,
-      transmission: 0.98,
-      thickness: 0.5,
-      ior: 1.5,
-      attenuationColor: new THREE.Color(0xeef2ff),
-      attenuationDistance: 4.0,
-      clearcoat: 0.9,
-      clearcoatRoughness: 0.05,
-      envMapIntensity: 1.0,
-    };
-    // No color/normal/roughness maps on glass — the marble texturing
-    // would just look like dirt smeared on clean crystal.
-    columnMat = new THREE.MeshPhysicalMaterial(glassOpts);
-    archMat = new THREE.MeshPhysicalMaterial(glassOpts);
-  } else {
-    // Marble (default)
-    columnMat = new THREE.MeshPhysicalMaterial({
-      color: 0xffffff,
-      map: colTexColor,
-      normalMap: colTexNormal,
-      // Reduced from 1.8 — high-frequency normal detail on a curved surface
-      // combined with a tight clearcoat lobe causes sub-pixel specular flicker.
-      normalScale: new THREE.Vector2(0.65, 0.65),
-      roughnessMap: colTexRough,
-      roughness: 1.0,
-      metalness: 0.0,
-      // Broader clearcoat lobe so the highlight covers multiple pixels.
-      clearcoat: 1.0,
-      clearcoatRoughness: 0.16,
-      emissive: 0x3a1612,
-      emissiveIntensity: 0.06,
-      envMapIntensity: 0.7,
-    });
-    archMat = new THREE.MeshPhysicalMaterial({
-      color: 0xffffff,
-      map: archTexColor,
-      normalMap: archTexNormal,
-      normalScale: new THREE.Vector2(0.55, 0.55),
-      roughnessMap: archTexRough,
-      roughness: 1.0,
-      metalness: 0.0,
-      clearcoat: 1.0,
-      clearcoatRoughness: 0.18,
-      emissive: 0x3a1612,
-      emissiveIntensity: 0.05,
-      envMapIntensity: 0.7,
-    });
+  // Build all three material variants up front so we can hot-swap between
+  // them without reloading the page. Textures are referenced not copied,
+  // so this is cheap memory-wise.
+  const marbleColumnMat = new THREE.MeshPhysicalMaterial({
+    color: 0xffffff,
+    map: colTexColor,
+    normalMap: colTexNormal,
+    normalScale: new THREE.Vector2(0.65, 0.65),
+    roughnessMap: colTexRough,
+    roughness: 1.0,
+    metalness: 0.0,
+    clearcoat: 1.0,
+    clearcoatRoughness: 0.16,
+    emissive: 0x3a1612,
+    emissiveIntensity: 0.06,
+    envMapIntensity: 0.7,
+  });
+  const marbleArchMat = new THREE.MeshPhysicalMaterial({
+    color: 0xffffff,
+    map: archTexColor,
+    normalMap: archTexNormal,
+    normalScale: new THREE.Vector2(0.55, 0.55),
+    roughnessMap: archTexRough,
+    roughness: 1.0,
+    metalness: 0.0,
+    clearcoat: 1.0,
+    clearcoatRoughness: 0.18,
+    emissive: 0x3a1612,
+    emissiveIntensity: 0.05,
+    envMapIntensity: 0.7,
+  });
+
+  // Salt — Himalayan salt lamp. Pink-amber-crimson color range with bright
+  // milky-white opaque veins, crusty (chunky) surface via displacement,
+  // strong inner glow that's BLOCKED by the white veins (via emissiveMap
+  // and transmissionMap both fed from the same vein-opacity mask).
+  const saltColor = makeSaltColorTexture(2048);
+  const saltNormal = makeMarbleNormalFromColor(saltColor, 1.5);
+  const saltRough = makeMarbleRoughnessFromColor(saltColor);
+  const saltDisp = makeSaltDisplacementTexture(1024);
+  const saltVeinMask = makeOpacityVeinMapFromColor(saltColor, 2.2);
+  for (const t of [saltColor, saltNormal, saltRough, saltDisp, saltVeinMask]) {
+    t.anisotropy = anisotropy;
+    t.wrapS = t.wrapT = THREE.RepeatWrapping;
+    t.needsUpdate = true;
   }
+
+  const saltOpts = {
+    color: 0xff8a78,
+    map: saltColor,
+    normalMap: saltNormal,
+    normalScale: new THREE.Vector2(1.4, 1.4),
+    roughnessMap: saltRough,
+    roughness: 1.0,
+    metalness: 0.0,
+    clearcoat: 0.0,
+    // Translucent salt — light passes through everywhere EXCEPT the
+    // white veins, which are masked to 0 transmission (and 0 emissive).
+    transmission: 0.88,
+    transmissionMap: saltVeinMask,
+    thickness: 1.6,
+    ior: 1.55,
+    attenuationColor: new THREE.Color(0xff5a40),
+    attenuationDistance: 1.4,
+    emissive: 0xff5c34,
+    emissiveIntensity: 1.05,
+    emissiveMap: saltVeinMask,
+    // Crusty bumpy surface — chunks of geometry protruding (white in disp
+    // map) interleaved with pits (dark). Mid-gray = no displacement under
+    // bias=-scale/2.
+    displacementMap: saltDisp,
+    displacementScale: 0.18,
+    displacementBias: -0.09,
+    envMapIntensity: 0.4,
+  };
+  const saltColumnMat = new THREE.MeshPhysicalMaterial(saltOpts);
+  // Arch shares the same material — the displacement reads consistently
+  // even with the torus UV layout because the salt map repeats.
+  const saltArchMat = new THREE.MeshPhysicalMaterial({
+    ...saltOpts,
+    // Smaller chunks on the curved arch so the silhouette stays readable.
+    displacementScale: 0.10,
+    displacementBias: -0.05,
+  });
+
+  // Glass — no texture maps (would read as dirt smeared on clean crystal).
+  const glassOpts = {
+    color: 0xffffff,
+    roughness: 0.04,
+    metalness: 0.0,
+    transmission: 0.98,
+    thickness: 0.5,
+    ior: 1.5,
+    attenuationColor: new THREE.Color(0xeef2ff),
+    attenuationDistance: 4.0,
+    clearcoat: 0.9,
+    clearcoatRoughness: 0.05,
+    envMapIntensity: 1.0,
+  };
+  const glassColumnMat = new THREE.MeshPhysicalMaterial(glassOpts);
+  const glassArchMat = new THREE.MeshPhysicalMaterial(glassOpts);
+
+  const columnMatVariants = {
+    marble: marbleColumnMat,
+    salt: saltColumnMat,
+    glass: glassColumnMat,
+  };
+  const archMatVariants = {
+    marble: marbleArchMat,
+    salt: saltArchMat,
+    glass: glassArchMat,
+  };
+
+  const columnMat = columnMatVariants[columnMaterial] ?? marbleColumnMat;
+  const archMat = archMatVariants[columnMaterial] ?? marbleArchMat;
 
   // Darker accent stone for capitals/bases — slightly rougher, less polished.
   const accentStoneMat = new THREE.MeshPhysicalMaterial({
@@ -346,16 +402,20 @@ export function buildScene({
     clearcoatRoughness: 0.05,
   });
 
+  const columnMeshes = [];
+  // Higher vertical subdivision so the salt displacement map has vertices
+  // to push around — 64 radial × 48 vertical = ~6k tris per column.
+  // Marble/glass modes don't use displacement so the extra geometry is
+  // just dead weight in those modes, but it lets us hot-swap to salt
+  // without rebuilding the mesh.
+  const columnGeo = new THREE.CylinderGeometry(0.55, 0.65, COL_HEIGHT, 64, 48);
   for (const side of [-1, 1]) {
-    // Column shaft — higher segment count for smoother specular highlights.
-    const col = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.55, 0.65, COL_HEIGHT, 64, 1),
-      columnMat
-    );
+    const col = new THREE.Mesh(columnGeo, columnMat);
     col.position.set(side * ARCH_INNER, COL_BASE_Y + COL_HEIGHT / 2, 0);
     col.castShadow = true;
     col.receiveShadow = true;
     archGroup.add(col);
+    columnMeshes.push(col);
 
     const cap = new THREE.Mesh(
       new THREE.BoxGeometry(1.55, 0.45, 1.55),
@@ -508,7 +568,21 @@ export function buildScene({
   const piecesGroup = new THREE.Group();
   archGroup.add(piecesGroup);
 
-  return { scene, archGroup, piecesGroup };
+  // Hot-swap helper — replaces the material on the column shafts and the
+  // arch curve without rebuilding the scene. Cheap because all variants
+  // are already constructed; we just swap the .material references.
+  function setColumnMaterial(name) {
+    const cm = columnMatVariants[name] ?? marbleColumnMat;
+    const am = archMatVariants[name] ?? marbleArchMat;
+    for (const m of columnMeshes) m.material = cm;
+    arch.material = am;
+  }
+
+  return {
+    scene, archGroup, piecesGroup,
+    dimableLights, lampShadeMaterials,
+    setColumnMaterial,
+  };
 }
 
 export function cellPosition(col, row) {

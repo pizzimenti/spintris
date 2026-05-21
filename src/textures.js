@@ -239,6 +239,188 @@ export function makeMarbleNormalFromColor(colorTex, strength = 1.2, seamless = t
   return tex;
 }
 
+// ---- Himalayan salt (column / arch when 'salt' mode selected) ---------
+//
+// Targeting the look of a backlit Himalayan-salt lamp:
+//   - Warm pink-amber base with rich orange/crimson variation
+//   - Bright milky-white opaque veins running through (denser salt that
+//     doesn't transmit light)
+//   - Crystalline crusty surface — chunky, not smooth (driven by the
+//     companion displacement map and a cylinder subdivision in world.js)
+//
+// The white veins are the defining visual feature: they have to (a) read
+// as bright opaque streaks in the color map and (b) ZERO OUT both
+// transmission and emissive at those positions, so the lamp's interior
+// glow can't escape through them — same way real opaque salt deposits
+// behave in a lit lamp. Both effects are driven from a single derived
+// map (makeOpacityVeinMapFromColor) so they stay locked together.
+
+export function makeSaltColorTexture(size = 2048) {
+  const c = document.createElement('canvas');
+  c.width = c.height = size;
+  const ctx = c.getContext('2d');
+
+  // Warm pink-amber base with deep crimson at the edges.
+  const base = ctx.createRadialGradient(
+    size * 0.4, size * 0.5, size * 0.04,
+    size * 0.55, size * 0.55, size * 0.78,
+  );
+  base.addColorStop(0,    '#ff9c7a');
+  base.addColorStop(0.45, '#fa7e5c');
+  base.addColorStop(0.8,  '#cf483a');
+  base.addColorStop(1,    '#962a26');
+  ctx.fillStyle = base;
+  ctx.fillRect(0, 0, size, size);
+
+  // Color-variation patches: deep ambers and rich crimsons mottled in.
+  for (let i = 0; i < 70; i++) {
+    const x = Math.random() * size;
+    const y = Math.random() * size;
+    const r = 80 + Math.random() * 360;
+    const amber = Math.random() < 0.55;
+    const hue = amber ? 18 + Math.random() * 12 : 4 + Math.random() * 10;
+    const sat = 60 + Math.random() * 28;
+    const light = amber ? 55 + Math.random() * 18 : 35 + Math.random() * 15;
+    ctx.fillStyle = `hsla(${hue}, ${sat}%, ${light}%, ${0.10 + Math.random() * 0.16})`;
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // ---- White opaque veins — the defining "blocking light" feature ----
+  // Random walks like the concrete cracks but THICK and BRIGHT.
+  function whiteVein(sx, sy, steps, maxW) {
+    let x = sx, y = sy;
+    let heading = Math.random() * Math.PI * 2;
+    for (let s = 0; s < steps; s++) {
+      heading += (Math.random() - 0.5) * 0.22;
+      const stride = 1.0 + Math.random() * 2.2;
+      x += Math.cos(heading + (Math.random() - 0.5) * 0.4) * stride;
+      y += Math.sin(heading + (Math.random() - 0.5) * 0.4) * stride;
+      const t = s / steps;
+      const taper = Math.sin(t * Math.PI);
+      const w = maxW * (0.35 + 0.65 * taper) * (0.75 + Math.random() * 0.5);
+      // Near-white milky color, high opacity so it pegs the luminance
+      // close to 1.0 — needed for the derived emissive/transmission map
+      // to cut a hard hole here.
+      ctx.fillStyle = `rgba(${250 + Math.random() * 5 | 0}, ${243 + Math.random() * 10 | 0}, ${230 + Math.random() * 15 | 0}, ${0.78 + Math.random() * 0.20})`;
+      ctx.beginPath();
+      ctx.arc(x, y, w, 0, Math.PI * 2);
+      ctx.fill();
+      // Occasional breaks and branches for naturalism
+      if (Math.random() < 0.025) s += 2;
+      if (Math.random() < 0.012 && steps > 20) whiteVein(x, y, Math.floor(steps * 0.4), maxW * 0.7);
+    }
+  }
+  // Many primary veins + thinner secondaries on top
+  for (let i = 0; i < 28; i++) {
+    whiteVein(Math.random() * size, Math.random() * size, 90 + Math.floor(Math.random() * 220), 2.4 + Math.random() * 4.2);
+  }
+  for (let i = 0; i < 16; i++) {
+    whiteVein(Math.random() * size, Math.random() * size, 60 + Math.floor(Math.random() * 120), 1.0 + Math.random() * 1.6);
+  }
+
+  // Crystalline speckle — fine pepper of bright/dark flecks
+  for (let i = 0; i < 9000; i++) {
+    const warm = Math.random() < 0.65;
+    const lum = warm ? 200 + Math.random() * 50 : 90 + Math.random() * 60;
+    const r = lum, g = (lum * 0.84) | 0, b = (lum * 0.68) | 0;
+    ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${0.08 + Math.random() * 0.16})`;
+    ctx.beginPath();
+    ctx.arc(Math.random() * size, Math.random() * size, 0.4 + Math.random() * 1.6, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.userData.canvas = c;
+  return tex;
+}
+
+// Salt displacement — bidirectional bumps. White areas of the heightmap
+// push outward (chunks protruding), black areas push inward (pits).
+// Background sits at mid-gray (no displacement, with bias = -scale/2).
+export function makeSaltDisplacementTexture(size = 2048) {
+  const c = document.createElement('canvas');
+  c.width = c.height = size;
+  const ctx = c.getContext('2d');
+
+  // Mid gray = surface level under bias=-scale/2 convention
+  ctx.fillStyle = '#808080';
+  ctx.fillRect(0, 0, size, size);
+
+  // Large outward chunks — bright soft-edged blobs
+  for (let i = 0; i < 140; i++) {
+    const x = Math.random() * size, y = Math.random() * size;
+    const r = 40 + Math.random() * 110;
+    const peak = 0.55 + Math.random() * 0.4;
+    const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+    g.addColorStop(0, `rgba(255, 255, 255, ${peak})`);
+    g.addColorStop(1, 'rgba(255, 255, 255, 0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(x - r, y - r, r * 2, r * 2);
+  }
+  // Medium-frequency lumps for crustier read
+  for (let i = 0; i < 280; i++) {
+    const x = Math.random() * size, y = Math.random() * size;
+    const r = 8 + Math.random() * 30;
+    const peak = 0.35 + Math.random() * 0.45;
+    const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+    g.addColorStop(0, `rgba(${190 + Math.random() * 60 | 0}, ${190 + Math.random() * 60 | 0}, ${190 + Math.random() * 60 | 0}, ${peak})`);
+    g.addColorStop(1, 'rgba(128, 128, 128, 0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(x - r, y - r, r * 2, r * 2);
+  }
+  // Pits — dark blobs (less frequent, smaller)
+  for (let i = 0; i < 90; i++) {
+    const x = Math.random() * size, y = Math.random() * size;
+    const r = 14 + Math.random() * 40;
+    const peak = 0.45 + Math.random() * 0.4;
+    const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+    g.addColorStop(0, `rgba(0, 0, 0, ${peak})`);
+    g.addColorStop(1, 'rgba(0, 0, 0, 0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(x - r, y - r, r * 2, r * 2);
+  }
+
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  return tex;
+}
+
+// Opacity mask derived from a color map's luminance. White pixels in the
+// source (the milky veins) come out near-black in this map; dark/colored
+// pixels come out bright. Used simultaneously as transmissionMap (cuts
+// transmission to zero in the veins) and emissiveMap (blocks the inner
+// glow from escaping through them) so the veins read as truly opaque.
+export function makeOpacityVeinMapFromColor(colorTex, exponent = 1.6) {
+  const src = colorTex.userData.canvas;
+  const w = src.width, h = src.height;
+  const sctx = src.getContext('2d');
+  const data = sctx.getImageData(0, 0, w, h).data;
+
+  const out = document.createElement('canvas');
+  out.width = w; out.height = h;
+  const octx = out.getContext('2d');
+  const img = octx.createImageData(w, h);
+
+  for (let i = 0; i < w * h; i++) {
+    const o = i * 4;
+    const lum = (0.299 * data[o] + 0.587 * data[o + 1] + 0.114 * data[o + 2]) / 255;
+    // Invert + contrast curve. lum=1 (white vein) → 0; lum=0.3 (pink) → ~0.85.
+    const v = Math.pow(Math.max(0, 1 - lum), exponent / 2);
+    const px = Math.round(v * 255);
+    img.data[o] = img.data[o + 1] = img.data[o + 2] = px;
+    img.data[o + 3] = 255;
+  }
+  octx.putImageData(img, 0, 0);
+
+  const tex = new THREE.CanvasTexture(out);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  return tex;
+}
+
 // Heightmap from color luminance — fed into MeshPhysicalMaterial's
 // displacementMap so dark areas (pits, cracks, missing chunks) physically
 // recess into the geometry. Contrast curve (pow > 1) deepens the darks

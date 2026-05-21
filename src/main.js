@@ -14,7 +14,7 @@ import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { Tetris, COLS, ROWS } from './tetris.js';
 import { buildScene, createBrick, cellPosition } from './world.js';
 import { makeWarehouseEnvironment } from './textures.js';
-import { ParticleField, CameraShake } from './effects.js';
+import { ParticleField, CameraShake, LightTransition } from './effects.js';
 import { log, reportRenderer, reportScene, startFrameMonitor, isDebug } from './diag.js';
 
 const canvas = document.getElementById('game');
@@ -152,11 +152,27 @@ function resolveColumnMaterial() {
 const columnMaterial = resolveColumnMaterial();
 log.info(`column material: ${columnMaterial}`);
 
-const { scene, archGroup, piecesGroup } = buildScene({
+const {
+  scene, archGroup, piecesGroup,
+  dimableLights, lampShadeMaterials, setColumnMaterial: applyColumnMaterial,
+} = buildScene({
   anisotropy,
   shadowMapSize: quality.shadowMapSize,
   columnMaterial,
 });
+
+// Salt mode dims every other light source ~85% so the salt-lamp glow has
+// room to read. LightTransition captures the original intensities and
+// scales them by a level [0..1] each frame; this is what makes the dim
+// transition smooth instead of a hard cut.
+const SALT_DIM_LEVEL = 0.15;
+const lightTransition = new LightTransition(dimableLights, lampShadeMaterials);
+// If we're starting in salt, snap the lights to the dim level now so the
+// first rendered frame doesn't show full lights for a beat before fading.
+if (columnMaterial === 'salt') lightTransition.setLevel(SALT_DIM_LEVEL);
+
+// Active column material (mutable — the slider can change it at runtime).
+let currentColumnMaterial = columnMaterial;
 
 // Warehouse-style environment map → PMREM cubemap → IBL for every PBR
 // material. Painted canvas equirectangular: dim warm ceiling with bright
@@ -341,18 +357,42 @@ for (const btn of document.querySelectorAll('#quality button')) {
   });
 }
 
-// Column material slider — same persist+reload pattern. Material setup
-// happens in world.js at construction time; we can't hot-swap without
-// rebuilding the scene, so reload is the cleanest path.
+// Column material slider — HOT SWAP (no reload). Entering salt fades the
+// rest of the scene's lighting down before the salt lamp's emissive
+// takes over; exiting salt swaps the material instantly (kills the
+// emissive) and then ramps the lights back up. Marble↔Glass is a plain
+// instant swap because neither needs the lighting pivot.
+function setColumnMaterialAnimated(name) {
+  if (name === currentColumnMaterial) return;
+  const cmBtns = document.querySelectorAll('#column-mat button');
+  // update button highlight immediately so the UI doesn't feel laggy
+  for (const b of cmBtns) b.classList.toggle('active', b.dataset.cm === name);
+  try { localStorage.setItem('spintris.columns', name); } catch {}
+
+  if (name === 'salt') {
+    // Dim everything first, THEN snap the salt material on so the
+    // "salt lamp kicks on instantly" beat lands cleanly.
+    lightTransition.tweenTo(SALT_DIM_LEVEL, 1.6, () => {
+      applyColumnMaterial('salt');
+      currentColumnMaterial = 'salt';
+    });
+  } else if (currentColumnMaterial === 'salt') {
+    // Coming OUT of salt: kill the emissive immediately by swapping
+    // the material, then bring the lights back up smoothly so we
+    // don't jump from "dim+glow" to "full bright" in one frame.
+    applyColumnMaterial(name);
+    currentColumnMaterial = name;
+    lightTransition.tweenTo(1.0, 1.6);
+  } else {
+    // marble ↔ glass — no lighting change needed, just swap.
+    applyColumnMaterial(name);
+    currentColumnMaterial = name;
+  }
+}
+
 for (const btn of document.querySelectorAll('#column-mat button')) {
   if (btn.dataset.cm === columnMaterial) btn.classList.add('active');
-  btn.addEventListener('click', () => {
-    if (btn.dataset.cm === columnMaterial) return;
-    try { localStorage.setItem('spintris.columns', btn.dataset.cm); } catch {}
-    const u = new URL(location.href);
-    u.searchParams.delete('columns');
-    location.href = u.toString();
-  });
+  btn.addEventListener('click', () => setColumnMaterialAnimated(btn.dataset.cm));
 }
 
 // ---- Game wiring ----
@@ -424,9 +464,46 @@ function refresh(rebuildBoardFlag = false) {
   updateHUD();
 }
 
+// Game-over auto-restart — fires 10s after the run ends unless the user
+// hits ESC to stay on the game-over screen, or R to restart immediately.
+const AUTO_RESTART_MS = 10_000;
+let autoRestartTimer = null;
+
+function doRestart() {
+  game.reset();
+  particles.clear();    // drop in-flight bursts from the previous run
+  shake.reset();        // zero out any decaying camera trauma
+  hideOverlay();
+  paused = false;
+  orbitAngle = 0;
+  positionOrbit();
+  fallAccum = 0;
+  refresh(true);
+}
+
+function startAutoRestartTimer() {
+  if (autoRestartTimer != null) return;
+  autoRestartTimer = setTimeout(() => {
+    autoRestartTimer = null;
+    if (game.gameOver) doRestart();
+  }, AUTO_RESTART_MS);
+}
+
+function cancelAutoRestartTimer() {
+  if (autoRestartTimer == null) return;
+  clearTimeout(autoRestartTimer);
+  autoRestartTimer = null;
+  // Update the overlay hint so the user knows the auto-restart was cancelled.
+  const hint = document.querySelector('#overlay .hint');
+  if (hint) hint.innerHTML = 'Press <kbd>R</kbd> to restart';
+}
+
 function checkGameOver() {
   if (game.gameOver) {
     showOverlay('GAME OVER', `Final score: ${game.score.toLocaleString()}`);
+    const hint = document.querySelector('#overlay .hint');
+    if (hint) hint.innerHTML = 'Auto-restart in 10s · <kbd>ESC</kbd> cancel · <kbd>R</kbd> restart now';
+    startAutoRestartTimer();
   }
 }
 
@@ -458,15 +535,10 @@ window.addEventListener('keydown', (e) => {
 
   if (game.gameOver) {
     if (e.code === 'KeyR') {
-      game.reset();
-      particles.clear();    // drop in-flight bursts from the previous run
-      shake.reset();        // zero out any decaying camera trauma
-      hideOverlay();
-      paused = false;
-      orbitAngle = 0;
-      positionOrbit();
-      fallAccum = 0;
-      refresh(true);
+      cancelAutoRestartTimer();
+      doRestart();
+    } else if (e.code === 'Escape') {
+      cancelAutoRestartTimer();
     }
     return;
   }
@@ -543,6 +615,7 @@ function animate() {
   }
 
   particles.update(dt);
+  lightTransition.update(dt);
 
   renderPipeline.render();
   tickEngineSample();

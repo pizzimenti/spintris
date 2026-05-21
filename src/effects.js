@@ -94,3 +94,61 @@ export class CameraShake {
   // Zero trauma so a fresh game starts with no inherited shake.
   reset() { this.trauma = 0; }
 }
+
+// Smoothly fades every supplied light's intensity by a global multiplier,
+// plus matching emissive-intensity scaling on a separate list of "shade"
+// materials (the glowing globes on the corner stand lamps that should
+// dim in lockstep with their point lights). Used for the cinematic
+// transition into salt-lamp mode.
+export class LightTransition {
+  constructor(lights, shadeMaterials) {
+    // Snapshot the originals so we can multiply against them every frame
+    // — otherwise we'd lose precision and drift over many transitions.
+    this.lights = lights.map(l => ({ obj: l, full: l.intensity }));
+    this.shades = shadeMaterials.map(m => ({ mat: m, full: m.emissiveIntensity }));
+    this.level = 1;
+    this.target = 1;
+    this.rate = 1.5;        // levels per second
+    this.onArrive = null;
+    this.apply();
+  }
+
+  // Snap to a level immediately (used at boot when initial mode is salt).
+  setLevel(level) {
+    this.level = this.target = Math.max(0, Math.min(1, level));
+    this.onArrive = null;
+    this.apply();
+  }
+
+  // Animate to a target level. `rate` is levels-per-second.
+  // `onArrive` fires when the target is reached.
+  tweenTo(level, rate = 1.5, onArrive = null) {
+    this.target = Math.max(0, Math.min(1, level));
+    this.rate = rate;
+    this.onArrive = onArrive;
+  }
+
+  update(dt) {
+    if (this.level === this.target) {
+      if (this.onArrive) {
+        const cb = this.onArrive; this.onArrive = null;
+        cb();
+      }
+      return;
+    }
+    const diff = this.target - this.level;
+    const step = Math.sign(diff) * Math.min(Math.abs(diff), this.rate * dt);
+    this.level += step;
+    this.apply();
+    if (this.level === this.target && this.onArrive) {
+      const cb = this.onArrive; this.onArrive = null;
+      cb();
+    }
+  }
+
+  apply() {
+    const k = this.level;
+    for (const l of this.lights) l.obj.intensity = l.full * k;
+    for (const s of this.shades) s.mat.emissiveIntensity = s.full * k;
+  }
+}
