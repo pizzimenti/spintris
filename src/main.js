@@ -254,31 +254,11 @@ resize();
 const eng = {
   backend: document.getElementById('eng-backend'),
   fps:     document.getElementById('eng-fps'),
-  frame:   document.getElementById('eng-frame'),
-  load:    document.getElementById('eng-load'),
-  calls:   document.getElementById('eng-calls'),
-  tris:    document.getElementById('eng-tris'),
   pixels:  document.getElementById('eng-pixels'),
-  adapter: document.getElementById('eng-adapter'),
 };
 
 const isWebGPU = !!renderer.backend?.isWebGPUBackend;
 eng.backend.textContent = isWebGPU ? 'WebGPU' : 'WebGL 2';
-
-// Adapter name — async on WebGPU, sync on WebGL 2.
-if (isWebGPU) {
-  navigator.gpu?.requestAdapter?.().then(a => {
-    const i = a?.info;
-    if (i) eng.adapter.textContent = [i.vendor, i.architecture, i.device].filter(Boolean).join(' · ');
-  }).catch(() => { eng.adapter.textContent = 'adapter info unavailable'; });
-} else {
-  const ctx = renderer.getContext?.();
-  const dbg = ctx?.getExtension?.('WEBGL_debug_renderer_info');
-  if (dbg && ctx) {
-    const r = ctx.getParameter(dbg.UNMASKED_RENDERER_WEBGL) ?? '?';
-    eng.adapter.textContent = r;
-  }
-}
 
 // Resolution / pixel ratio
 function updatePixels() {
@@ -307,17 +287,6 @@ setInterval(() => {
   const sorted = [...dtBuf].sort((a, b) => a - b);
   const median = sorted[Math.floor(sorted.length / 2)];
   eng.fps.textContent = `${(1000 / median).toFixed(0)}`;
-  eng.frame.textContent = `${median.toFixed(1)} ms`;
-  // GPU "load" as fraction of 16.67ms (60fps budget). >100% = we missed the
-  // budget that frame on average. Honest caveat: this is just frame-time,
-  // not real GPU busy %, since browsers don't expose that.
-  const loadPct = (median / 16.67) * 100;
-  eng.load.textContent = `${Math.min(999, loadPct).toFixed(0)}%`;
-  const info = renderer.info?.render;
-  if (info) {
-    eng.calls.textContent = info.calls?.toLocaleString() ?? '—';
-    eng.tris.textContent = info.triangles?.toLocaleString() ?? '—';
-  }
 }, 500);
 
 // Quality slider — highlight current, save+reload on click.
