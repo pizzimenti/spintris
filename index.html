@@ -129,11 +129,11 @@
       background: rgba(255, 255, 255, 0.08);
       margin: 8px -6px;
     }
-    #quality {
+    #quality, #column-mat {
       display: flex; gap: 4px; margin-top: 4px;
       pointer-events: auto; /* slider is interactive even inside .hud */
     }
-    #quality button {
+    #quality button, #column-mat button {
       flex: 1;
       padding: 6px 0;
       font-size: 10px;
@@ -147,11 +147,11 @@
       cursor: pointer;
       transition: all 0.15s ease;
     }
-    #quality button:hover {
+    #quality button:hover, #column-mat button:hover {
       color: rgba(255, 255, 255, 0.85);
       background: rgba(255, 255, 255, 0.08);
     }
-    #quality button.active {
+    #quality button.active, #column-mat button.active {
       color: #ffd699;
       background: rgba(255, 170, 80, 0.14);
       border-color: rgba(255, 170, 80, 0.45);
@@ -187,6 +187,13 @@
       <button type="button" data-q="low">Low</button>
       <button type="button" data-q="medium">Med</button>
       <button type="button" data-q="high">High</button>
+    </div>
+    <div class="divider"></div>
+    <div class="section"><span class="lbl">Column Material</span></div>
+    <div id="column-mat">
+      <button type="button" data-cm="marble">Marble</button>
+      <button type="button" data-cm="salt">Salt</button>
+      <button type="button" data-cm="glass">Glass</button>
     </div>
   </div>
 

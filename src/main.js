@@ -135,7 +135,24 @@ function detectMaxAnisotropy() {
 }
 const anisotropy = detectMaxAnisotropy();
 log.info(`anisotropy in use: ${anisotropy}`);
-const { scene, archGroup, piecesGroup } = buildScene({ anisotropy, shadowMapSize: quality.shadowMapSize });
+
+// Column material — persisted in localStorage, URL ?columns= overrides.
+// 'marble' is the default PBR pink marble; 'salt' is rough Himalayan-pink-salt
+// with transmission + warm emissive glow; 'glass' is a near-clear crystal.
+function resolveColumnMaterial() {
+  const url = new URLSearchParams(location.search).get('columns');
+  const stored = (() => { try { return localStorage.getItem('spintris.columns'); } catch { return null; } })();
+  const pick = url || stored || 'marble';
+  return ['marble', 'salt', 'glass'].includes(pick) ? pick : 'marble';
+}
+const columnMaterial = resolveColumnMaterial();
+log.info(`column material: ${columnMaterial}`);
+
+const { scene, archGroup, piecesGroup } = buildScene({
+  anisotropy,
+  shadowMapSize: quality.shadowMapSize,
+  columnMaterial,
+});
 
 // Warehouse-style environment map → PMREM cubemap → IBL for every PBR
 // material. Painted canvas equirectangular: dim warm ceiling with bright
@@ -316,6 +333,20 @@ for (const btn of document.querySelectorAll('#quality button')) {
     // Strip any ?quality= URL override so the new stored choice wins.
     const u = new URL(location.href);
     u.searchParams.delete('quality');
+    location.href = u.toString();
+  });
+}
+
+// Column material slider — same persist+reload pattern. Material setup
+// happens in world.js at construction time; we can't hot-swap without
+// rebuilding the scene, so reload is the cleanest path.
+for (const btn of document.querySelectorAll('#column-mat button')) {
+  if (btn.dataset.cm === columnMaterial) btn.classList.add('active');
+  btn.addEventListener('click', () => {
+    if (btn.dataset.cm === columnMaterial) return;
+    try { localStorage.setItem('spintris.columns', btn.dataset.cm); } catch {}
+    const u = new URL(location.href);
+    u.searchParams.delete('columns');
     location.href = u.toString();
   });
 }

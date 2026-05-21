@@ -17,7 +17,11 @@ const COL_HEIGHT = 11.0;
 const COL_BASE_Y = -FIELD_H / 2 - 0.8;
 const FLOOR_Y = COL_BASE_Y - 0.3;
 
-export function buildScene({ anisotropy = 1, shadowMapSize = 4096 } = {}) {
+export function buildScene({
+  anisotropy = 1,
+  shadowMapSize = 4096,
+  columnMaterial = 'marble',
+} = {}) {
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x04050b);
   scene.fog = new THREE.FogExp2(0x05060c, 0.026);
@@ -219,47 +223,107 @@ export function buildScene({ anisotropy = 1, shadowMapSize = 4096 } = {}) {
   }
   if (archTexColor) archTexColor.colorSpace = THREE.SRGBColorSpace;
 
-  const columnMat = new THREE.MeshPhysicalMaterial({
-    color: 0xffffff,
-    map: colTexColor,
-    normalMap: colTexNormal,
-    // Reduced from 1.8 — high-frequency normal detail on a curved surface
-    // combined with a tight clearcoat lobe causes sub-pixel specular flicker.
-    normalScale: new THREE.Vector2(0.65, 0.65),
-    roughnessMap: colTexRough,
-    roughness: 1.0,
-    metalness: 0.0,
-    // Broader clearcoat lobe so the highlight covers multiple pixels.
-    clearcoat: 1.0,
-    clearcoatRoughness: 0.16,
-    // Transmission disabled: triggers a per-frame framebuffer-copy pass in
-    // three.js for refraction, which is a Dawn slow path on this adapter.
-    // Re-enable per-mesh if WebGPU perf improves on a future driver.
-    // transmission: 0.05,
-    // thickness: 0.35,
-    // ior: 1.5,
-    // attenuationColor: new THREE.Color(0xc88a82),
-    // attenuationDistance: 1.2,
-    emissive: 0x3a1612,
-    emissiveIntensity: 0.06,
-    envMapIntensity: 0.7,
-  });
+  // ---- Column / arch material (slider-selected) ------------------------
+  //
+  // Three modes for the columns + half-torus arch:
+  //
+  //   marble — current PBR pink marble (color/normal/roughness from the
+  //            generated texture set), no transmission so the WebGPU
+  //            framebuffer-copy slow path stays inactive.
+  //   salt   — rough Himalayan-pink-salt. High transmission + thickness
+  //            with warm attenuation color so light bleeds through and
+  //            takes on an orange tint inside; emissive simulates the
+  //            interior glow of a salt lamp. Rougher surface (no clearcoat
+  //            polish) so it reads as cut crystal, not polished stone.
+  //   glass  — clear crystal. Near-full transmission, very low roughness,
+  //            sharp clearcoat, neutral attenuation, ior 1.5.
+  //
+  // SALT and GLASS both turn transmission on, which triggers a per-frame
+  // framebuffer-copy pass for refraction. On Dawn / RADV this can be a
+  // slow path; the engine HUD's FPS readout will surface any regression.
 
-  const archMat = new THREE.MeshPhysicalMaterial({
-    color: 0xffffff,
-    map: archTexColor,
-    normalMap: archTexNormal,
-    normalScale: new THREE.Vector2(0.55, 0.55),
-    roughnessMap: archTexRough,
-    roughness: 1.0,
-    metalness: 0.0,
-    clearcoat: 1.0,
-    clearcoatRoughness: 0.18,
-    // (transmission stripped — see columnMat note)
-    emissive: 0x3a1612,
-    emissiveIntensity: 0.05,
-    envMapIntensity: 0.7,
-  });
+  let columnMat, archMat;
+  if (columnMaterial === 'salt') {
+    const saltOpts = {
+      color: 0xffb798,
+      roughness: 0.62,
+      metalness: 0.02,
+      clearcoat: 0.0,
+      transmission: 0.55,
+      thickness: 1.2,
+      ior: 1.55,
+      attenuationColor: new THREE.Color(0xff7a44),
+      attenuationDistance: 1.6,
+      emissive: 0xff5a22,
+      emissiveIntensity: 0.55,
+      envMapIntensity: 0.55,
+    };
+    columnMat = new THREE.MeshPhysicalMaterial({
+      ...saltOpts,
+      map: colTexColor,
+      normalMap: colTexNormal,
+      normalScale: new THREE.Vector2(1.2, 1.2),
+      roughnessMap: colTexRough,
+    });
+    archMat = new THREE.MeshPhysicalMaterial({
+      ...saltOpts,
+      map: archTexColor,
+      normalMap: archTexNormal,
+      normalScale: new THREE.Vector2(1.0, 1.0),
+      roughnessMap: archTexRough,
+    });
+  } else if (columnMaterial === 'glass') {
+    const glassOpts = {
+      color: 0xffffff,
+      roughness: 0.04,
+      metalness: 0.0,
+      transmission: 0.98,
+      thickness: 0.5,
+      ior: 1.5,
+      attenuationColor: new THREE.Color(0xeef2ff),
+      attenuationDistance: 4.0,
+      clearcoat: 0.9,
+      clearcoatRoughness: 0.05,
+      envMapIntensity: 1.0,
+    };
+    // No color/normal/roughness maps on glass — the marble texturing
+    // would just look like dirt smeared on clean crystal.
+    columnMat = new THREE.MeshPhysicalMaterial(glassOpts);
+    archMat = new THREE.MeshPhysicalMaterial(glassOpts);
+  } else {
+    // Marble (default)
+    columnMat = new THREE.MeshPhysicalMaterial({
+      color: 0xffffff,
+      map: colTexColor,
+      normalMap: colTexNormal,
+      // Reduced from 1.8 — high-frequency normal detail on a curved surface
+      // combined with a tight clearcoat lobe causes sub-pixel specular flicker.
+      normalScale: new THREE.Vector2(0.65, 0.65),
+      roughnessMap: colTexRough,
+      roughness: 1.0,
+      metalness: 0.0,
+      // Broader clearcoat lobe so the highlight covers multiple pixels.
+      clearcoat: 1.0,
+      clearcoatRoughness: 0.16,
+      emissive: 0x3a1612,
+      emissiveIntensity: 0.06,
+      envMapIntensity: 0.7,
+    });
+    archMat = new THREE.MeshPhysicalMaterial({
+      color: 0xffffff,
+      map: archTexColor,
+      normalMap: archTexNormal,
+      normalScale: new THREE.Vector2(0.55, 0.55),
+      roughnessMap: archTexRough,
+      roughness: 1.0,
+      metalness: 0.0,
+      clearcoat: 1.0,
+      clearcoatRoughness: 0.18,
+      emissive: 0x3a1612,
+      emissiveIntensity: 0.05,
+      envMapIntensity: 0.7,
+    });
+  }
 
   // Darker accent stone for capitals/bases — slightly rougher, less polished.
   const accentStoneMat = new THREE.MeshPhysicalMaterial({
