@@ -14,7 +14,7 @@ import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { Tetris, COLS, ROWS } from './tetris.js';
 import { buildScene, createBrick, cellPosition } from './world.js';
 import { makeWarehouseEnvironment } from './textures.js';
-import { ParticleField, CameraShake } from './effects.js';
+import { ParticleField, CameraShake, LightTransition } from './effects.js';
 import { log, reportRenderer, reportScene, startFrameMonitor, isDebug } from './diag.js';
 
 const canvas = document.getElementById('game');
@@ -152,11 +152,63 @@ function resolveColumnMaterial() {
 const columnMaterial = resolveColumnMaterial();
 log.info(`column material: ${columnMaterial}`);
 
-const { scene, archGroup, piecesGroup } = buildScene({
+const {
+  scene, archGroup, piecesGroup,
+  ambientLights, standLampLights, lampShadeMaterials, saltColumnLights, lavaLamps,
+  setColumnMaterial: applyColumnMaterial,
+} = buildScene({
   anisotropy,
   shadowMapSize: quality.shadowMapSize,
   columnMaterial,
 });
+
+// Salt mode adds its OWN bright internal lights (the lamps' bulbs). These
+// are instantly toggled by setSaltLights — they don't participate in the
+// dim/brighten ambient tween. Off everywhere except salt.
+function setSaltLightsOn(on) {
+  for (const l of saltColumnLights) {
+    l.intensity = on ? l.userData.targetIntensity : 0;
+  }
+}
+
+// Per-lamp captured originals — just the bulb PointLight from each
+// lava lamp now (the old shade-emissive globes are gone; their stand-in
+// is the blob ensemble inside the lava lamp, which has its own life).
+const standLampOriginals = standLampLights.map((l, i) => ({
+  light: l, lightFull: l.intensity, phase: i * 1.83,
+}));
+// Edison-bulb flicker: very low base intensity with multi-frequency
+// sine modulation + per-frame jitter + occasional deeper dip. Async
+// phase per lamp.
+let saltFlickerActive = false;
+let flickerT = 0;
+function updateSaltFlicker(dt) {
+  if (!saltFlickerActive) return;
+  flickerT += dt;
+  for (const o of standLampOriginals) {
+    const f1 = Math.sin(flickerT * 7.0 + o.phase);
+    const f2 = Math.sin(flickerT * 23.0 + o.phase * 1.3) * 0.5;
+    const f3 = (Math.random() - 0.5) * 0.35;
+    const dip = (Math.sin(flickerT * 1.7 + o.phase) > 0.93) ? -0.35 : 0;
+    const k = Math.max(0.015, 0.06 + (f1 + f2 + f3) * 0.018 + dip * 0.02);
+    o.light.intensity = o.lightFull * k;
+  }
+}
+
+// Two independent LightTransitions:
+//   - ambient (hemi/key/fill/rim/accent) → 0 in salt (real darkness)
+//   - stand lamps (4 corner lights + their shade emissives) → 0 in salt;
+//     the flicker function then drives a faint 4-8% modulation on top.
+const ambientTransition = new LightTransition(ambientLights, []);
+const standLampTransition = new LightTransition(standLampLights, lampShadeMaterials);
+if (columnMaterial === 'salt') {
+  ambientTransition.setLevel(0);
+  standLampTransition.setLevel(0); // flicker writes intensity directly each frame
+  saltFlickerActive = true;
+}
+
+// Active column material (mutable — the slider can change it at runtime).
+let currentColumnMaterial = columnMaterial;
 
 // Warehouse-style environment map → PMREM cubemap → IBL for every PBR
 // material. Painted canvas equirectangular: dim warm ceiling with bright
@@ -341,18 +393,48 @@ for (const btn of document.querySelectorAll('#quality button')) {
   });
 }
 
-// Column material slider — same persist+reload pattern. Material setup
-// happens in world.js at construction time; we can't hot-swap without
-// rebuilding the scene, so reload is the cleanest path.
+// Column material slider — HOT SWAP (no reload). Entering salt fades the
+// rest of the scene's lighting down before the salt lamp's emissive
+// takes over; exiting salt swaps the material instantly (kills the
+// emissive) and then ramps the lights back up. Marble↔Glass is a plain
+// instant swap because neither needs the lighting pivot.
+function setColumnMaterialAnimated(name) {
+  if (name === currentColumnMaterial) return;
+  const cmBtns = document.querySelectorAll('#column-mat button');
+  // update button highlight immediately so the UI doesn't feel laggy
+  for (const b of cmBtns) b.classList.toggle('active', b.dataset.cm === name);
+  try { localStorage.setItem('spintris.columns', name); } catch {}
+
+  if (name === 'salt') {
+    // Dim both ambient and stand lamps to zero, THEN swap material,
+    // turn on the salt internal lights, and engage the Edison flicker
+    // so the stand lamps come back with a faint modulated glow.
+    ambientTransition.tweenTo(0, 1.6);
+    standLampTransition.tweenTo(0, 1.6, () => {
+      applyColumnMaterial('salt');
+      setSaltLightsOn(true);
+      saltFlickerActive = true;
+      currentColumnMaterial = 'salt';
+    });
+  } else if (currentColumnMaterial === 'salt') {
+    // Coming OUT of salt: kill salt emissive + internal lights + flicker
+    // instantly, then ramp ambient and stand lamps back to full.
+    applyColumnMaterial(name);
+    setSaltLightsOn(false);
+    saltFlickerActive = false;
+    currentColumnMaterial = name;
+    ambientTransition.tweenTo(1.0, 1.6);
+    standLampTransition.tweenTo(1.0, 1.6);
+  } else {
+    // marble ↔ glass — no lighting change needed, just swap.
+    applyColumnMaterial(name);
+    currentColumnMaterial = name;
+  }
+}
+
 for (const btn of document.querySelectorAll('#column-mat button')) {
   if (btn.dataset.cm === columnMaterial) btn.classList.add('active');
-  btn.addEventListener('click', () => {
-    if (btn.dataset.cm === columnMaterial) return;
-    try { localStorage.setItem('spintris.columns', btn.dataset.cm); } catch {}
-    const u = new URL(location.href);
-    u.searchParams.delete('columns');
-    location.href = u.toString();
-  });
+  btn.addEventListener('click', () => setColumnMaterialAnimated(btn.dataset.cm));
 }
 
 // ---- Game wiring ----
@@ -424,9 +506,46 @@ function refresh(rebuildBoardFlag = false) {
   updateHUD();
 }
 
+// Game-over auto-restart — fires 10s after the run ends unless the user
+// hits ESC to stay on the game-over screen, or R to restart immediately.
+const AUTO_RESTART_MS = 10_000;
+let autoRestartTimer = null;
+
+function doRestart() {
+  game.reset();
+  particles.clear();    // drop in-flight bursts from the previous run
+  shake.reset();        // zero out any decaying camera trauma
+  hideOverlay();
+  paused = false;
+  orbitAngle = 0;
+  positionOrbit();
+  fallAccum = 0;
+  refresh(true);
+}
+
+function startAutoRestartTimer() {
+  if (autoRestartTimer != null) return;
+  autoRestartTimer = setTimeout(() => {
+    autoRestartTimer = null;
+    if (game.gameOver) doRestart();
+  }, AUTO_RESTART_MS);
+}
+
+function cancelAutoRestartTimer() {
+  if (autoRestartTimer == null) return;
+  clearTimeout(autoRestartTimer);
+  autoRestartTimer = null;
+  // Update the overlay hint so the user knows the auto-restart was cancelled.
+  const hint = document.querySelector('#overlay .hint');
+  if (hint) hint.innerHTML = 'Press <kbd>R</kbd> to restart';
+}
+
 function checkGameOver() {
   if (game.gameOver) {
     showOverlay('GAME OVER', `Final score: ${game.score.toLocaleString()}`);
+    const hint = document.querySelector('#overlay .hint');
+    if (hint) hint.innerHTML = 'Auto-restart in 10s · <kbd>ESC</kbd> cancel · <kbd>R</kbd> restart now';
+    startAutoRestartTimer();
   }
 }
 
@@ -458,15 +577,10 @@ window.addEventListener('keydown', (e) => {
 
   if (game.gameOver) {
     if (e.code === 'KeyR') {
-      game.reset();
-      particles.clear();    // drop in-flight bursts from the previous run
-      shake.reset();        // zero out any decaying camera trauma
-      hideOverlay();
-      paused = false;
-      orbitAngle = 0;
-      positionOrbit();
-      fallAccum = 0;
-      refresh(true);
+      cancelAutoRestartTimer();
+      doRestart();
+    } else if (e.code === 'Escape') {
+      cancelAutoRestartTimer();
     }
     return;
   }
@@ -543,6 +657,10 @@ function animate() {
   }
 
   particles.update(dt);
+  ambientTransition.update(dt);
+  standLampTransition.update(dt);
+  updateSaltFlicker(dt);
+  for (const lamp of lavaLamps) lamp.update(dt);
 
   renderPipeline.render();
   tickEngineSample();
