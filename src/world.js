@@ -1,5 +1,7 @@
 import * as THREE from 'three';
 import { COLS, ROWS } from './tetris.js';
+import * as BufferGeometryUtils from 'three/addons/utils/BufferGeometryUtils.js';
+import { LavaLamp } from './lava-lamp.js';
 import {
   makeConcreteColorTexture,
   makeDisplacementFromColor,
@@ -14,6 +16,84 @@ import {
 export const CELL = 0.55;
 export const FIELD_W = COLS * CELL;
 export const FIELD_H = ROWS * CELL;
+
+// ---- Salt-lamp geometry generator -------------------------------------
+//
+// Builds a single irregular salt-rock column by merging several overlapping
+// deformed icosahedron "chunks" along the vertical axis. Each chunk is a
+// sphere perturbed by multi-octave pseudo-noise (different seed phase per
+// chunk so they don't look identical). About 30% of the chunks are 1.5×
+// the base radius — random "bulge" sections that flare out, with all the
+// stranger overhangs/random faces the user wants.
+//
+// Vertex displacement is BIASED OUTWARD (range -0.4×amp .. +1.0×amp), so
+// the effective minimum radius of every chunk stays above the base radius
+// times ~0.86 — comfortably thicker than the marble cylinder's 0.65 top.
+function makeSaltLampGeometry(totalHeight, baseRadius, seedPhase = 0) {
+  // 8 chunks for an 11-unit column means ~1.57u between chunk centers.
+  // Base chunk radius 0.85 with outward-biased displacement (effective
+  // radius ~0.84 .. 1.11) more than spans that, so adjacent chunks
+  // OVERLAP and merge into a continuous irregular silhouette instead
+  // of reading as a stack of beads.
+  const chunkCount = 8;
+  const chunks = [];
+
+  for (let i = 0; i < chunkCount; i++) {
+    const t = i / (chunkCount - 1);
+    const baseY = -totalHeight / 2 + t * totalHeight;
+
+    // ~30% of chunks bulge to 1.5× radius for thick irregular sections.
+    const isBulge = Math.random() < 0.3;
+    const radiusMul = isBulge ? 1.5 : 0.95 + Math.random() * 0.20;
+    const chunkRadius = baseRadius * radiusMul;
+
+    // Small lateral wobble — adjacent chunks misalign slightly, creating
+    // overhangs where one bulges out further than its neighbor.
+    const xOff = (Math.random() - 0.5) * baseRadius * 0.30;
+    const zOff = (Math.random() - 0.5) * baseRadius * 0.30;
+
+    // Detail 4 → 1280 tris per chunk. At detail 3 the noise displacement
+    // produced large enough angle differences between adjacent triangles
+    // that the wireframe read through smooth shading; detail 4 averages
+    // smoother and the salt reads as a continuous crusty surface.
+    const geo = new THREE.IcosahedronGeometry(chunkRadius, 4);
+    geo.computeVertexNormals();
+    const positions = geo.attributes.position;
+    const normals = geo.attributes.normal;
+    const v = new THREE.Vector3(), n = new THREE.Vector3();
+
+    for (let j = 0; j < positions.count; j++) {
+      v.fromBufferAttribute(positions, j);
+      n.fromBufferAttribute(normals, j);
+
+      // Multi-octave fake-noise. Different frequency per chunk + seed
+      // phase so every chunk has its own surface character.
+      const px = v.x * 2.4 + seedPhase + i * 11.7;
+      const py = v.y * 2.4;
+      const pz = v.z * 2.4;
+      const o1 = Math.sin(px) * Math.cos(py * 1.3) * Math.sin(pz * 0.9);
+      const o2 = Math.sin(px * 2.7 + pz * 1.9) * Math.cos(py * 2.3) * 0.55;
+      const o3 = Math.sin(py * 5.3 + pz * 3.1) * Math.cos(px * 4.2) * 0.28;
+      const noise = (o1 + o2 + o3); // roughly -1.8 .. 1.8
+
+      // Bias outward — even noise=-1 still adds a small positive amount,
+      // so concavities don't carve below the chunk's nominal radius
+      // (keeps the salt thicker than the marble columns).
+      const amp = chunkRadius * 0.32;
+      const displacement = (noise * 0.5 + 0.45) * amp;
+      v.addScaledVector(n, displacement);
+      v.x += xOff;
+      v.y += baseY;
+      v.z += zOff;
+      positions.setXYZ(j, v.x, v.y, v.z);
+    }
+    positions.needsUpdate = true;
+    geo.computeVertexNormals();
+    chunks.push(geo);
+  }
+
+  return BufferGeometryUtils.mergeGeometries(chunks);
+}
 
 const ARCH_INNER = 4.0;
 const COL_HEIGHT = 11.0;
@@ -31,16 +111,21 @@ export function buildScene({
 
   // ---- Lighting ----------------------------------------------------------
   //
-  // Lights that should dim together when entering salt-lamp mode are
-  // pushed onto `dimableLights`. The corner lamp shade materials are
-  // tracked separately so their emissive globes fade in lockstep with
-  // the point lights they emit (visually the same fixture).
-  const dimableLights = [];
+  // Split into TWO groups so salt mode can treat them differently:
+  //   - ambientLights: hemi, key, fill, rim, accent. Tweened to BLACK in
+  //     salt mode (the user wants real darkness, not just dimness).
+  //   - standLampLights: the 4 corner stand-lamp point lights. Tweened
+  //     to a faint base in salt mode, then a per-frame flicker modulates
+  //     them on top to read as "Edison bulbs barely keeping alight".
+  // lampShadeMaterials tracks the corresponding glowing globe meshes so
+  // their emissive fades in lockstep with their point light.
+  const ambientLights = [];
+  const standLampLights = [];
   const lampShadeMaterials = [];
 
   const hemi = new THREE.HemisphereLight(0xa6b8ff, 0x2a1f10, 0.35);
   scene.add(hemi);
-  dimableLights.push(hemi);
+  ambientLights.push(hemi);
 
   // Key light positioned directly behind the camera's starting orbit
   // position (camera begins at (0, 4, 17)), high enough that its shadow
@@ -65,87 +150,60 @@ export function buildScene({
   key.shadow.normalBias = 0.02;
   key.shadow.radius = 4;
   scene.add(key);
-  dimableLights.push(key);
+  ambientLights.push(key);
 
   const fill = new THREE.DirectionalLight(0x6080ff, 0.75);
   fill.position.set(-12, 6, -8);
   scene.add(fill);
-  dimableLights.push(fill);
+  ambientLights.push(fill);
 
   const rim = new THREE.DirectionalLight(0xff8866, 0.6);
   rim.position.set(0, 4, -14);
   scene.add(rim);
-  dimableLights.push(rim);
+  ambientLights.push(rim);
 
   const accent = new THREE.PointLight(0xffd699, 1.6, 16, 1.4);
   accent.position.set(0, 0, 4);
   scene.add(accent);
-  dimableLights.push(accent);
+  ambientLights.push(accent);
 
-  // ---- Corner stand lamps -----------------------------------------------
+  // ---- Corner lava lamps ------------------------------------------------
   //
-  // Four floor lamps at the corners surrounding the arch, half the arch's
-  // total height. Thin dark metal pole, glowing globe shade at the top
-  // with a co-located warm point light. These are the only ambient light
-  // sources besides the key spotlight that throws the arch's shadow.
-  const archTotalHeight = COL_HEIGHT + 0.45 + ARCH_INNER + 0.6; // base→keystone top
-  const LAMP_H = archTotalHeight / 2;          // half arch height
-  const LAMP_OFFSET = 6.5;                      // distance from origin in X/Z
+  // Four GIANT lava lamps in the corners. Each is a full lava-lamp tower
+  // (heavy metallic base + tall glass vessel with rising/falling emissive
+  // wax blobs simulated via simple buoyancy+damping integrator + dome
+  // cap) with its own PointLight at the bulb position. These are now the
+  // primary "stand lamps" — they replace the old pole+globe setup.
+  const LAMP_OFFSET = 6.5;
   const lampPositions = [
     [+LAMP_OFFSET, +LAMP_OFFSET],
     [-LAMP_OFFSET, +LAMP_OFFSET],
     [+LAMP_OFFSET, -LAMP_OFFSET],
     [-LAMP_OFFSET, -LAMP_OFFSET],
   ];
+  const lavaLamps = [];
+  for (let i = 0; i < lampPositions.length; i++) {
+    const [px, pz] = lampPositions[i];
+    const lamp = new LavaLamp({
+      height: 7.5,
+      vesselRadius: 0.55,
+      blobCount: 7,
+      // Stagger colors across lamps so the corners read distinct from
+      // each other (cool warm, hot warm, mostly-pink, mostly-orange).
+      blobPalette: [
+        [0xff5040, 0xff7038, 0xff4070, 0xff9050, 0xff3060, 0xff8848, 0xff6028],
+        [0xff4060, 0xff3848, 0xff5080, 0xff6878, 0xff2858, 0xff7068, 0xff4838],
+        [0xff7038, 0xff5028, 0xff8848, 0xff9858, 0xff6038, 0xffa060, 0xff7048],
+        [0xff5080, 0xff4070, 0xff60a0, 0xff5090, 0xff3878, 0xff7898, 0xff4868],
+      ][i],
+    });
+    lamp.position.set(px, FLOOR_Y, pz);
+    scene.add(lamp);
+    lavaLamps.push(lamp);
 
-  const poleGeo = new THREE.CylinderGeometry(0.04, 0.06, LAMP_H, 14, 1);
-  const poleMat = new THREE.MeshPhysicalMaterial({
-    color: 0x18181c,
-    roughness: 0.35,
-    metalness: 0.85,
-    clearcoat: 0.4,
-    clearcoatRoughness: 0.2,
-  });
-  const baseGeo = new THREE.CylinderGeometry(0.28, 0.32, 0.08, 24, 1);
-  const shadeGeo = new THREE.SphereGeometry(0.34, 28, 18);
-  const shadeMat = new THREE.MeshStandardMaterial({
-    color: 0xfff2d4,
-    emissive: 0xffd095,
-    emissiveIntensity: 3.2,
-    roughness: 0.45,
-    metalness: 0.05,
-  });
-
-  // Each lamp gets its OWN shade material instance so each one's
-  // emissiveIntensity can be dimmed independently (well — together by
-  // LightTransition.apply(); but they need separate refs since the
-  // class scales each captured material individually).
-  for (const [px, pz] of lampPositions) {
-    const baseY = FLOOR_Y + 0.04;
-    const base = new THREE.Mesh(baseGeo, poleMat);
-    base.position.set(px, baseY, pz);
-    base.castShadow = true;
-    base.receiveShadow = true;
-    scene.add(base);
-
-    const pole = new THREE.Mesh(poleGeo, poleMat);
-    pole.position.set(px, baseY + LAMP_H / 2, pz);
-    pole.castShadow = true;
-    scene.add(pole);
-
-    const myShadeMat = shadeMat.clone();
-    const shade = new THREE.Mesh(shadeGeo, myShadeMat);
-    shade.position.set(px, baseY + LAMP_H + 0.05, pz);
-    scene.add(shade);
-    lampShadeMaterials.push(myShadeMat);
-
-    // Warm point light co-located with the shade. No castShadow on these
-    // — adding cube-map shadow casts for 4 point lights would multiply
-    // shadow render cost by ~24 passes per frame for marginal gain.
-    const light = new THREE.PointLight(0xffd095, 7.5, 16, 1.5);
-    light.position.set(px, baseY + LAMP_H + 0.05, pz);
-    scene.add(light);
-    dimableLights.push(light);
+    // The lamp's own bulb PointLight is what we register with the
+    // stand-lamp transition / flicker system.
+    standLampLights.push(lamp.bulbLight);
   }
 
   // ---- Floor: polished cured concrete with mirror clearcoat -------------
@@ -297,58 +355,62 @@ export function buildScene({
     envMapIntensity: 0.7,
   });
 
-  // Salt — Himalayan salt lamp. Pink-amber-crimson color range with bright
-  // milky-white opaque veins, crusty (chunky) surface via displacement,
-  // strong inner glow that's BLOCKED by the white veins (via emissiveMap
-  // and transmissionMap both fed from the same vein-opacity mask).
-  const saltColor = makeSaltColorTexture(2048);
-  const saltNormal = makeMarbleNormalFromColor(saltColor, 1.5);
-  const saltRough = makeMarbleRoughnessFromColor(saltColor);
-  const saltDisp = makeSaltDisplacementTexture(1024);
-  const saltVeinMask = makeOpacityVeinMapFromColor(saltColor, 2.2);
-  for (const t of [saltColor, saltNormal, saltRough, saltDisp, saltVeinMask]) {
-    t.anisotropy = anisotropy;
-    t.wrapS = t.wrapT = THREE.RepeatWrapping;
-    t.needsUpdate = true;
-  }
+  // Salt — Himalayan salt lamp. Real PBR rock texture (Poly Haven
+  // red_sandstone_pavement) for albedo/normal/roughness so the surface
+  // detail reads as crystalline rock rather than procedural noise. A
+  // procedural opacity mask still drives the white-vein-blocks-light
+  // effect on transmission and emissive (the photo texture doesn't
+  // have isolatable veins to mask).
+  const saltColorBase = makeSaltColorTexture(1024);  // kept for vein mask
+  const saltVeinMask = makeOpacityVeinMapFromColor(saltColorBase, 2.2);
+  saltVeinMask.anisotropy = anisotropy;
+  saltVeinMask.wrapS = saltVeinMask.wrapT = THREE.RepeatWrapping;
+  saltVeinMask.needsUpdate = true;
 
+  const texLoader = new THREE.TextureLoader();
+  const saltColor = texLoader.load('assets/salt/diff.jpg');
+  saltColor.colorSpace = THREE.SRGBColorSpace;
+  saltColor.wrapS = saltColor.wrapT = THREE.RepeatWrapping;
+  saltColor.anisotropy = anisotropy;
+  const saltNormal = texLoader.load('assets/salt/nor.jpg');
+  saltNormal.wrapS = saltNormal.wrapT = THREE.RepeatWrapping;
+  saltNormal.anisotropy = anisotropy;
+  const saltRough = texLoader.load('assets/salt/rough.jpg');
+  saltRough.wrapS = saltRough.wrapT = THREE.RepeatWrapping;
+  saltRough.anisotropy = anisotropy;
+
+  // Salt material — very transparent, very bright emissive. The actual
+  // chunky/overhang silhouette comes from the salt-lamp geometry (built
+  // below), NOT a displacement map — a deformed icosahedron can have
+  // overhangs that a displacement-on-cylinder cannot.
   const saltOpts = {
     color: 0xff8a78,
     map: saltColor,
     normalMap: saltNormal,
-    normalScale: new THREE.Vector2(1.4, 1.4),
+    normalScale: new THREE.Vector2(1.2, 1.2),
     roughnessMap: saltRough,
-    roughness: 1.0,
+    roughness: 0.85,
     metalness: 0.0,
     clearcoat: 0.0,
-    // Translucent salt — light passes through everywhere EXCEPT the
-    // white veins, which are masked to 0 transmission (and 0 emissive).
-    transmission: 0.88,
+    // High transmission, low thickness, long attenuation distance →
+    // light passes through almost entirely (except in the white veins).
+    transmission: 0.96,
     transmissionMap: saltVeinMask,
-    thickness: 1.6,
+    thickness: 0.6,
     ior: 1.55,
-    attenuationColor: new THREE.Color(0xff5a40),
-    attenuationDistance: 1.4,
-    emissive: 0xff5c34,
-    emissiveIntensity: 1.05,
+    attenuationColor: new THREE.Color(0xff7a48),
+    attenuationDistance: 3.2,
+    // Strong inner glow. The salt PointLights below cast the actual
+    // illumination on the floor — emissive here is the salt's OWN
+    // surface luminosity.
+    emissive: 0xff6c30,
+    emissiveIntensity: 2.6,
     emissiveMap: saltVeinMask,
-    // Crusty bumpy surface — chunks of geometry protruding (white in disp
-    // map) interleaved with pits (dark). Mid-gray = no displacement under
-    // bias=-scale/2.
-    displacementMap: saltDisp,
-    displacementScale: 0.18,
-    displacementBias: -0.09,
-    envMapIntensity: 0.4,
+    envMapIntensity: 0.25,
   };
   const saltColumnMat = new THREE.MeshPhysicalMaterial(saltOpts);
-  // Arch shares the same material — the displacement reads consistently
-  // even with the torus UV layout because the salt map repeats.
-  const saltArchMat = new THREE.MeshPhysicalMaterial({
-    ...saltOpts,
-    // Smaller chunks on the curved arch so the silhouette stays readable.
-    displacementScale: 0.10,
-    displacementBias: -0.05,
-  });
+  // Arch stays marble in salt mode — the salt columns "support" the arch,
+  // which is structurally a separate material. (saltArchMat removed.)
 
   // Glass — no texture maps (would read as dirt smeared on clean crystal).
   const glassOpts = {
@@ -372,9 +434,12 @@ export function buildScene({
     salt: saltColumnMat,
     glass: glassColumnMat,
   };
+  // Arch material variants intentionally treat 'salt' as marble — in
+  // salt mode the columns are salt but the arch stays marble (the lamps
+  // "support" the arch; different material).
   const archMatVariants = {
     marble: marbleArchMat,
-    salt: saltArchMat,
+    salt: marbleArchMat,
     glass: glassArchMat,
   };
 
@@ -403,19 +468,39 @@ export function buildScene({
   });
 
   const columnMeshes = [];
-  // Higher vertical subdivision so the salt displacement map has vertices
-  // to push around — 64 radial × 48 vertical = ~6k tris per column.
-  // Marble/glass modes don't use displacement so the extra geometry is
-  // just dead weight in those modes, but it lets us hot-swap to salt
-  // without rebuilding the mesh.
-  const columnGeo = new THREE.CylinderGeometry(0.55, 0.65, COL_HEIGHT, 64, 48);
+  // Cylinder used by marble + glass modes. Single vertical segment is
+  // fine — neither material uses displacement.
+  const columnCylinderGeo = new THREE.CylinderGeometry(0.55, 0.65, COL_HEIGHT, 64, 1);
+  // Two distinct salt-lamp blobs — each column gets its own irregular
+  // shape (the seedPhase makes the noise field differ between them).
+  // Base radius 0.85 — even the thinnest section of the salt lamp
+  // (effective min radius ≈ 0.84) stays thicker than the marble
+  // cylinder's 0.65 top, and the bulge chunks flare to ~1.28+. Per
+  // the brief: "thicker than the other columns at their smallest
+  // radius and even thicker in sections by 1.5× at random intervals."
+  const columnSaltGeos = [
+    makeSaltLampGeometry(COL_HEIGHT, 0.85, 0.0),
+    makeSaltLampGeometry(COL_HEIGHT, 0.85, 3.7),
+  ];
+  // Each column tracks both geometry options so we can hot-swap on
+  // material change without rebuilding meshes.
+  const columnGeoSets = columnSaltGeos.map(saltGeo => ({
+    cylinder: columnCylinderGeo,
+    salt: saltGeo,
+  }));
+
+  let geoIdx = 0;
   for (const side of [-1, 1]) {
-    const col = new THREE.Mesh(columnGeo, columnMat);
+    const initialGeo = (columnMaterial === 'salt')
+      ? columnGeoSets[geoIdx].salt
+      : columnGeoSets[geoIdx].cylinder;
+    const col = new THREE.Mesh(initialGeo, columnMat);
     col.position.set(side * ARCH_INNER, COL_BASE_Y + COL_HEIGHT / 2, 0);
     col.castShadow = true;
     col.receiveShadow = true;
     archGroup.add(col);
     columnMeshes.push(col);
+    geoIdx++;
 
     const cap = new THREE.Mesh(
       new THREE.BoxGeometry(1.55, 0.45, 1.55),
@@ -568,19 +653,43 @@ export function buildScene({
   const piecesGroup = new THREE.Group();
   archGroup.add(piecesGroup);
 
-  // Hot-swap helper — replaces the material on the column shafts and the
-  // arch curve without rebuilding the scene. Cheap because all variants
-  // are already constructed; we just swap the .material references.
+  // ---- Salt internal point lights ---------------------------------------
+  //
+  // One PointLight inside each salt column, warm amber, casts on the floor
+  // so the area around the columns picks up that orange salt-lamp glow.
+  // Off (intensity 0) by default — only fires up in salt mode.
+  const SALT_LIGHT_TARGET = 14;
+  const saltColumnLights = [];
+  for (const side of [-1, 1]) {
+    const light = new THREE.PointLight(0xff7030, 0, 9, 1.6);
+    light.position.set(side * ARCH_INNER, COL_BASE_Y + COL_HEIGHT * 0.55, 0);
+    light.userData.targetIntensity = SALT_LIGHT_TARGET;
+    scene.add(light);
+    saltColumnLights.push(light);
+  }
+  // If we're booting straight into salt mode, light them up immediately.
+  if (columnMaterial === 'salt') {
+    for (const l of saltColumnLights) l.intensity = SALT_LIGHT_TARGET;
+  }
+
+  // Hot-swap helper — swaps the material AND the geometry on the columns.
+  // Salt mode flips to the irregular icosahedron blob; marble/glass go
+  // back to the smooth cylinder.
   function setColumnMaterial(name) {
     const cm = columnMatVariants[name] ?? marbleColumnMat;
     const am = archMatVariants[name] ?? marbleArchMat;
-    for (const m of columnMeshes) m.material = cm;
+    for (let i = 0; i < columnMeshes.length; i++) {
+      columnMeshes[i].material = cm;
+      columnMeshes[i].geometry = (name === 'salt')
+        ? columnGeoSets[i].salt
+        : columnGeoSets[i].cylinder;
+    }
     arch.material = am;
   }
 
   return {
     scene, archGroup, piecesGroup,
-    dimableLights, lampShadeMaterials,
+    ambientLights, standLampLights, lampShadeMaterials, saltColumnLights, lavaLamps,
     setColumnMaterial,
   };
 }
@@ -605,15 +714,27 @@ function getBrickMaterial(color, mode) {
       color, transparent: true, opacity: 0.14, depthWrite: false,
     });
   } else {
+    // Stained-glass brick — ALPHA-transparent rather than refractive.
+    // three.js transmission shares a single per-frame backdrop snapshot
+    // that excludes every transmissive object, so a transmissive brick
+    // is invisible THROUGH any other transmissive surface (the glass
+    // column, the lava-lamp glass, etc). Using plain alpha-transparency
+    // means the brick alpha-blends correctly through any number of
+    // transparent layers in front of it, while the strong emissive
+    // still casts the brick's color onto the floor below (the
+    // "stained-glass on floor" effect was always driven by emissive
+    // contribution, not by transmission — so we don't lose that).
     mat = new THREE.MeshPhysicalMaterial({
       color,
       emissive: color,
-      emissiveIntensity: mode === 'active' ? 0.5 : 0.28,
-      roughness: 0.25,
-      metalness: 0.25,
-      clearcoat: 0.7,
-      clearcoatRoughness: 0.12,
-      envMapIntensity: 0.85,
+      emissiveIntensity: mode === 'active' ? 1.6 : 1.1,
+      roughness: 0.15,
+      metalness: 0.0,
+      transparent: true,
+      opacity: 0.72,
+      clearcoat: 0.9,
+      clearcoatRoughness: 0.05,
+      envMapIntensity: 0.6,
     });
   }
   matCache.set(key, mat);
@@ -623,7 +744,10 @@ function getBrickMaterial(color, mode) {
 export function createBrick(color, mode = 'settled') {
   const mesh = new THREE.Mesh(brickGeo, getBrickMaterial(color, mode));
   if (mode !== 'ghost') {
-    mesh.castShadow = true;
+    // No castShadow — stained-glass bricks shouldn't block light. The
+    // floor sees colored emissive contribution from each brick instead
+    // of a hard dark shadow, which is the actual visual we want.
+    mesh.castShadow = false;
     mesh.receiveShadow = true;
   }
   return mesh;

@@ -154,22 +154,58 @@ log.info(`column material: ${columnMaterial}`);
 
 const {
   scene, archGroup, piecesGroup,
-  dimableLights, lampShadeMaterials, setColumnMaterial: applyColumnMaterial,
+  ambientLights, standLampLights, lampShadeMaterials, saltColumnLights, lavaLamps,
+  setColumnMaterial: applyColumnMaterial,
 } = buildScene({
   anisotropy,
   shadowMapSize: quality.shadowMapSize,
   columnMaterial,
 });
 
-// Salt mode dims every other light source ~85% so the salt-lamp glow has
-// room to read. LightTransition captures the original intensities and
-// scales them by a level [0..1] each frame; this is what makes the dim
-// transition smooth instead of a hard cut.
-const SALT_DIM_LEVEL = 0.15;
-const lightTransition = new LightTransition(dimableLights, lampShadeMaterials);
-// If we're starting in salt, snap the lights to the dim level now so the
-// first rendered frame doesn't show full lights for a beat before fading.
-if (columnMaterial === 'salt') lightTransition.setLevel(SALT_DIM_LEVEL);
+// Salt mode adds its OWN bright internal lights (the lamps' bulbs). These
+// are instantly toggled by setSaltLights — they don't participate in the
+// dim/brighten ambient tween. Off everywhere except salt.
+function setSaltLightsOn(on) {
+  for (const l of saltColumnLights) {
+    l.intensity = on ? l.userData.targetIntensity : 0;
+  }
+}
+
+// Per-lamp captured originals — just the bulb PointLight from each
+// lava lamp now (the old shade-emissive globes are gone; their stand-in
+// is the blob ensemble inside the lava lamp, which has its own life).
+const standLampOriginals = standLampLights.map((l, i) => ({
+  light: l, lightFull: l.intensity, phase: i * 1.83,
+}));
+// Edison-bulb flicker: very low base intensity with multi-frequency
+// sine modulation + per-frame jitter + occasional deeper dip. Async
+// phase per lamp.
+let saltFlickerActive = false;
+let flickerT = 0;
+function updateSaltFlicker(dt) {
+  if (!saltFlickerActive) return;
+  flickerT += dt;
+  for (const o of standLampOriginals) {
+    const f1 = Math.sin(flickerT * 7.0 + o.phase);
+    const f2 = Math.sin(flickerT * 23.0 + o.phase * 1.3) * 0.5;
+    const f3 = (Math.random() - 0.5) * 0.35;
+    const dip = (Math.sin(flickerT * 1.7 + o.phase) > 0.93) ? -0.35 : 0;
+    const k = Math.max(0.015, 0.06 + (f1 + f2 + f3) * 0.018 + dip * 0.02);
+    o.light.intensity = o.lightFull * k;
+  }
+}
+
+// Two independent LightTransitions:
+//   - ambient (hemi/key/fill/rim/accent) → 0 in salt (real darkness)
+//   - stand lamps (4 corner lights + their shade emissives) → 0 in salt;
+//     the flicker function then drives a faint 4-8% modulation on top.
+const ambientTransition = new LightTransition(ambientLights, []);
+const standLampTransition = new LightTransition(standLampLights, lampShadeMaterials);
+if (columnMaterial === 'salt') {
+  ambientTransition.setLevel(0);
+  standLampTransition.setLevel(0); // flicker writes intensity directly each frame
+  saltFlickerActive = true;
+}
 
 // Active column material (mutable — the slider can change it at runtime).
 let currentColumnMaterial = columnMaterial;
@@ -370,19 +406,25 @@ function setColumnMaterialAnimated(name) {
   try { localStorage.setItem('spintris.columns', name); } catch {}
 
   if (name === 'salt') {
-    // Dim everything first, THEN snap the salt material on so the
-    // "salt lamp kicks on instantly" beat lands cleanly.
-    lightTransition.tweenTo(SALT_DIM_LEVEL, 1.6, () => {
+    // Dim both ambient and stand lamps to zero, THEN swap material,
+    // turn on the salt internal lights, and engage the Edison flicker
+    // so the stand lamps come back with a faint modulated glow.
+    ambientTransition.tweenTo(0, 1.6);
+    standLampTransition.tweenTo(0, 1.6, () => {
       applyColumnMaterial('salt');
+      setSaltLightsOn(true);
+      saltFlickerActive = true;
       currentColumnMaterial = 'salt';
     });
   } else if (currentColumnMaterial === 'salt') {
-    // Coming OUT of salt: kill the emissive immediately by swapping
-    // the material, then bring the lights back up smoothly so we
-    // don't jump from "dim+glow" to "full bright" in one frame.
+    // Coming OUT of salt: kill salt emissive + internal lights + flicker
+    // instantly, then ramp ambient and stand lamps back to full.
     applyColumnMaterial(name);
+    setSaltLightsOn(false);
+    saltFlickerActive = false;
     currentColumnMaterial = name;
-    lightTransition.tweenTo(1.0, 1.6);
+    ambientTransition.tweenTo(1.0, 1.6);
+    standLampTransition.tweenTo(1.0, 1.6);
   } else {
     // marble ↔ glass — no lighting change needed, just swap.
     applyColumnMaterial(name);
@@ -615,7 +657,10 @@ function animate() {
   }
 
   particles.update(dt);
-  lightTransition.update(dt);
+  ambientTransition.update(dt);
+  standLampTransition.update(dt);
+  updateSaltFlicker(dt);
+  for (const lamp of lavaLamps) lamp.update(dt);
 
   renderPipeline.render();
   tickEngineSample();
