@@ -106,7 +106,11 @@ renderer.toneMappingExposure = 1.0;
 
 backendEl.textContent = renderer.backend?.isWebGPUBackend ? 'WEBGPU' : 'WEBGL2';
 
-reportRenderer(renderer);
+// Diagnostics dump is for ?debug=1 only — gate the heavy GPU-info /
+// extension-list / texture-audit walks behind the same flag as the
+// frame HUD. Otherwise a normal page load pays the cost of a full
+// renderer / extension introspection on every refresh.
+if (isDebug) reportRenderer(renderer);
 
 // renderer.capabilities.getMaxAnisotropy() returns 1 under both the WebGPU
 // backend and the WebGL2 fallback on this driver (capabilities proxy doesn't
@@ -545,8 +549,8 @@ function animate() {
 }
 
 refresh(true);
-reportScene(scene);
-startFrameMonitor(renderer);
+if (isDebug) reportScene(scene);
+startFrameMonitor(renderer); // self-gates on isDebug internally
 loadingEl.classList.add('hide');
 if (isDebug) log.info('debug mode active (use ?debug=1)');
 renderer.setAnimationLoop(animate);
