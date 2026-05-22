@@ -87,12 +87,12 @@ export class LavaLamp extends THREE.Group {
     this.add(cap);
 
     // ---- Marching-cubes wax ----
-    // Resolution 20³ = 8000 cells. Each frame we reset, place metaballs,
-    // and trigger the surface generation. The MC object's local volume
-    // is normalised to [0,1]³; we scale it into the vessel's interior
-    // (~85% of the vessel radius so the wax never visibly clips the
-    // glass wall).
-    const resolution = 22;
+    // 18³ = 5832 cells per lamp × 4 lamps = ~23k cells per frame on
+    // the CPU. Bumping res above this on a 4-lamp scene drops frame
+    // rate to ~10 fps on this iGPU because the JS marching-cubes
+    // step is per-frame and synchronous. 18 still reads as smooth
+    // metaball blobs at this camera distance.
+    const resolution = 18;
     const waxMat = new THREE.MeshPhysicalMaterial({
       // Opaque wax. Real lava lamp wax doesn't transmit light — it just
       // glows brightly via emissive lit from below by the bulb. Skipping
@@ -112,9 +112,13 @@ export class LavaLamp extends THREE.Group {
     const innerHeight = height * 0.94;
     this.mc.scale.set(innerRadius, innerHeight, innerRadius);
     this.mc.position.set(0, baseHeight + height / 2, 0);
-    // The MC bounding cube is rendered against the back of the glass, so
-    // disable frustum culling — otherwise an off-axis camera can clip it.
     this.mc.frustumCulled = false;
+    // The wax is inside an opaque-ish glass shell — its shadow contribution
+    // would never be visible (the lamp's solid base + neck already block
+    // shadows from inside). Skipping castShadow saves a per-frame shadow
+    // pass over geometry that's rebuilt from scratch every frame by MC.
+    this.mc.castShadow = false;
+    this.mc.receiveShadow = false;
     this.add(this.mc);
 
     // ---- Blob state ----
@@ -122,19 +126,23 @@ export class LavaLamp extends THREE.Group {
     // Most blobs start hot near the bottom — they'll begin by rising.
     this.blobs = [];
     for (let i = 0; i < blobCount; i++) {
+      // Bigger strength (was 0.42-0.56) so each globule has actual mass
+      // visible from outside the glass. At 0.62-0.84 they read clearly
+      // as wax blobs rather than thin droplets.
+      const strength = 0.62 + Math.random() * 0.22;
+      const homeX = 0.32 + Math.random() * 0.36;
+      const homeZ = 0.32 + Math.random() * 0.36;
       this.blobs.push({
-        x: 0.35 + Math.random() * 0.30,
+        x: homeX,
         y: 0.05 + Math.random() * 0.20,
-        z: 0.35 + Math.random() * 0.30,
+        z: homeZ,
         vy: 0,
-        strength: 0.42 + Math.random() * 0.14,
-        // Strength of the field per blob. Higher = bigger globule.
-        // Temperature (0=cool, 1=hot). Mostly start warm.
+        strength,
         temp: 0.75 + Math.random() * 0.25,
         swayPhase: Math.random() * Math.PI * 2,
         swayFreq: 0.4 + Math.random() * 0.3,
-        homeX: 0.35 + Math.random() * 0.30,
-        homeZ: 0.35 + Math.random() * 0.30,
+        homeX,
+        homeZ,
       });
     }
 

@@ -52,10 +52,10 @@ function makeSaltLampGeometry(totalHeight, baseRadius, seedPhase = 0) {
     const xOff = (Math.random() - 0.5) * baseRadius * 0.30;
     const zOff = (Math.random() - 0.5) * baseRadius * 0.30;
 
-    // Detail 4 → 1280 tris per chunk. At detail 3 the noise displacement
-    // produced large enough angle differences between adjacent triangles
-    // that the wireframe read through smooth shading; detail 4 averages
-    // smoother and the salt reads as a continuous crusty surface.
+    // Detail 4 → 1280 tris per chunk × 8 × 2 cols = 20k tris.
+    // Higher detail looked worse — more triangles = more visible
+    // wireframe pattern under noise. Smoothness comes from LOWER
+    // noise frequency below, not from more triangles.
     const geo = new THREE.IcosahedronGeometry(chunkRadius, 4);
     geo.computeVertexNormals();
     const positions = geo.attributes.position;
@@ -66,20 +66,20 @@ function makeSaltLampGeometry(totalHeight, baseRadius, seedPhase = 0) {
       v.fromBufferAttribute(positions, j);
       n.fromBufferAttribute(normals, j);
 
-      // Multi-octave fake-noise. Different frequency per chunk + seed
-      // phase so every chunk has its own surface character.
-      const px = v.x * 2.4 + seedPhase + i * 11.7;
-      const py = v.y * 2.4;
-      const pz = v.z * 2.4;
+      // Multi-octave noise. Low base frequency (1.2 vs 2.4 before) so
+      // adjacent triangles get SIMILAR perturbation values — that's
+      // what kills the visible wireframe pattern. Higher-frequency
+      // octaves contribute less so they add detail without crisp edges.
+      const px = v.x * 1.2 + seedPhase + i * 11.7;
+      const py = v.y * 1.2;
+      const pz = v.z * 1.2;
       const o1 = Math.sin(px) * Math.cos(py * 1.3) * Math.sin(pz * 0.9);
-      const o2 = Math.sin(px * 2.7 + pz * 1.9) * Math.cos(py * 2.3) * 0.55;
-      const o3 = Math.sin(py * 5.3 + pz * 3.1) * Math.cos(px * 4.2) * 0.28;
-      const noise = (o1 + o2 + o3); // roughly -1.8 .. 1.8
+      const o2 = Math.sin(px * 2.1 + pz * 1.5) * Math.cos(py * 1.8) * 0.40;
+      const o3 = Math.sin(py * 3.5 + pz * 2.4) * Math.cos(px * 3.1) * 0.18;
+      const noise = (o1 + o2 + o3);
 
-      // Bias outward — even noise=-1 still adds a small positive amount,
-      // so concavities don't carve below the chunk's nominal radius
-      // (keeps the salt thicker than the marble columns).
-      const amp = chunkRadius * 0.32;
+      // Bias outward so concavities don't carve below nominal radius.
+      const amp = chunkRadius * 0.28;
       const displacement = (noise * 0.5 + 0.45) * amp;
       v.addScaledVector(n, displacement);
       v.x += xOff;
@@ -92,7 +92,13 @@ function makeSaltLampGeometry(totalHeight, baseRadius, seedPhase = 0) {
     chunks.push(geo);
   }
 
-  return BufferGeometryUtils.mergeGeometries(chunks);
+  // Merge, then weld nearby vertices across chunks. Chunks overlap by
+  // design so some vertices end up coincident; welding them eliminates
+  // the visible crease at chunk-junction boundaries.
+  let merged = BufferGeometryUtils.mergeGeometries(chunks);
+  merged = BufferGeometryUtils.mergeVertices(merged, 0.05);
+  merged.computeVertexNormals();
+  return merged;
 }
 
 const ARCH_INNER = 4.0;
@@ -391,21 +397,16 @@ export function buildScene({
     roughnessMap: saltRough,
     roughness: 0.85,
     metalness: 0.0,
-    clearcoat: 0.0,
-    // High transmission, low thickness, long attenuation distance →
-    // light passes through almost entirely (except in the white veins).
-    transmission: 0.96,
-    transmissionMap: saltVeinMask,
-    thickness: 0.6,
-    ior: 1.55,
-    attenuationColor: new THREE.Color(0xff7a48),
-    attenuationDistance: 3.2,
-    // Strong inner glow. The salt PointLights below cast the actual
-    // illumination on the floor — emissive here is the salt's OWN
-    // surface luminosity.
+    clearcoat: 0.25,
+    clearcoatRoughness: 0.45,
+    // Opaque. Earlier attempts at transmission + transparency on the
+    // 20k-tri salt-blob geometry destroyed frame rate. The "lit from
+    // within" effect is carried entirely by emissive + the inner
+    // PointLights — real backlit Himalayan salt looks like solid
+    // glowing rock anyway.
     emissive: 0xff6c30,
     emissiveIntensity: 2.6,
-    emissiveMap: saltVeinMask,
+    emissiveMap: saltVeinMask,  // white veins → no inner glow there
     envMapIntensity: 0.25,
   };
   const saltColumnMat = new THREE.MeshPhysicalMaterial(saltOpts);
